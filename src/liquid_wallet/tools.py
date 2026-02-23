@@ -35,18 +35,15 @@ def get_manager() -> WalletManager:
 
 # Tool implementations
 
-def lw_generate_mnemonic(words: int = 12) -> dict[str, Any]:
+def lw_generate_mnemonic(**_kwargs) -> dict[str, Any]:
     """
-    Generate a new BIP39 mnemonic phrase.
-    
-    Args:
-        words: Number of words (12 or 24). Default: 12
-        
+    Generate a new BIP39 mnemonic phrase (12 words).
+
     Returns:
         mnemonic: The generated mnemonic phrase
     """
     manager = get_manager()
-    mnemonic = manager.generate_mnemonic(words)
+    mnemonic = manager.generate_mnemonic()
     return {
         "mnemonic": mnemonic,
         "words": len(mnemonic.split()),

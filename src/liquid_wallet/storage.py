@@ -2,6 +2,7 @@
 
 import json
 import os
+import re
 from dataclasses import asdict, dataclass, field
 from datetime import datetime
 from pathlib import Path
@@ -50,6 +51,16 @@ class Config:
         return cls(**data)
 
 
+def _validate_wallet_name(name: str) -> str:
+    """Validate wallet name to prevent path traversal."""
+    if not re.fullmatch(r'[a-zA-Z0-9_-]{1,64}', name):
+        raise ValueError(
+            f"Invalid wallet name '{name}'. "
+            "Use only letters, numbers, hyphens and underscores (max 64 chars)."
+        )
+    return name
+
+
 class Storage:
     """Handles wallet and config persistence."""
 
@@ -61,10 +72,10 @@ class Storage:
         self._ensure_dirs()
 
     def _ensure_dirs(self):
-        """Create necessary directories."""
-        self.base_dir.mkdir(parents=True, exist_ok=True)
-        self.wallets_dir.mkdir(exist_ok=True)
-        self.cache_dir.mkdir(exist_ok=True)
+        """Create necessary directories with restricted permissions."""
+        self.base_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
+        self.wallets_dir.mkdir(exist_ok=True, mode=0o700)
+        self.cache_dir.mkdir(exist_ok=True, mode=0o700)
 
     def _derive_key(self, passphrase: str, salt: bytes) -> bytes:
         """Derive encryption key from passphrase."""
@@ -105,13 +116,15 @@ class Storage:
 
     def save_config(self, config: Config):
         """Save global configuration."""
-        with open(self.config_path, "w") as f:
+        fd = os.open(self.config_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(fd, "w") as f:
             json.dump(config.to_dict(), f, indent=2)
 
     # Wallet operations
 
     def _wallet_path(self, name: str) -> Path:
         """Get path to wallet file."""
+        _validate_wallet_name(name)
         return self.wallets_dir / f"{name}.json"
 
     def wallet_exists(self, name: str) -> bool:
@@ -133,7 +146,8 @@ class Storage:
     def save_wallet(self, wallet: WalletData):
         """Save wallet data."""
         path = self._wallet_path(wallet.name)
-        with open(path, "w") as f:
+        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(fd, "w") as f:
             json.dump(wallet.to_dict(), f, indent=2)
 
     def delete_wallet(self, name: str) -> bool:
@@ -148,6 +162,7 @@ class Storage:
 
     def get_cache_path(self, wallet_name: str) -> Path:
         """Get cache directory for wallet."""
+        _validate_wallet_name(wallet_name)
         cache_path = self.cache_dir / wallet_name
         cache_path.mkdir(exist_ok=True)
         return cache_path

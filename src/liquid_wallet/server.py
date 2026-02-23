@@ -29,9 +29,9 @@ TOOL_SCHEMAS = {
             "properties": {
                 "words": {
                     "type": "integer",
-                    "description": "Number of words (12 or 24)",
+                    "description": "Number of words (12)",
                     "default": 12,
-                    "enum": [12, 24],
+                    "enum": [12],
                 },
             },
         },
