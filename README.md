@@ -37,24 +37,11 @@ Then configure Claude Desktop (`~/.claude/claude_desktop_config.json`):
 }
 ```
 
-**Important:** You must use the full path to `uvx` because Claude Desktop (macOS GUI app) doesn't inherit your shell's PATH. Find it with:
+**Important:** You can use the full path to `uvx` because Claude Desktop (macOS GUI app) doesn't inherit your shell's PATH. Find it with:
 
 ```bash
 which uvx
 # Example output: /Users/yourname/.local/bin/uvx
-```
-
-Then replace `/full/path/to/uvx` with the actual path. For example:
-
-```json
-{
-  "mcpServers": {
-    "aqua-mcp": {
-      "command": "/Users/yourname/.local/bin/uvx",
-      "args": ["aqua-mcp"]
-    }
-  }
-}
 ```
 
 Restart Claude Desktop and you're ready to use Liquid wallets.
