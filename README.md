@@ -33,11 +33,11 @@ This creates a virtual environment and installs all dependencies.
 
 ```bash
 # Using uv
-uv run python -m liquid_wallet.server
+uv run python -m aqua_mcp.server
 
 # Or activate venv first
 source .venv/bin/activate
-python -m liquid_wallet.server
+python -m aqua_mcp.server
 ```
 
 ### 2. Configure your MCP client
@@ -47,9 +47,9 @@ Add to your MCP client configuration (e.g., Claude Desktop `~/.claude/claude_des
 ```json
 {
   "mcpServers": {
-    "liquid-wallet": {
+    "aqua-mcp": {
       "command": "uv",
-      "args": ["run", "--directory", "/path/to/aqua-mcp", "python", "-m", "liquid_wallet.server"]
+      "args": ["run", "--directory", "/path/to/aqua-mcp", "python", "-m", "aqua_mcp.server"]
     }
   }
 }
@@ -122,7 +122,7 @@ Fee: 250 sats
 
 ## Configuration
 
-Default config location: `~/.liquid-wallet/config.json`
+Default config location: `~/.aqua-mcp/config.json`
 
 ```json
 {

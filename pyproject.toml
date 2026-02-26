@@ -39,7 +39,7 @@ dev = [
 ]
 
 [project.scripts]
-liquid-wallet = "liquid_wallet.server:main"
+aqua-mcp = "aqua_mcp.server:main"
 
 [project.urls]
 Homepage = "https://github.com/jan3dev/aqua-mcp"
@@ -47,7 +47,7 @@ Repository = "https://github.com/jan3dev/aqua-mcp"
 Documentation = "https://github.com/jan3dev/aqua-mcp#readme"
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/liquid_wallet"]
+packages = ["src/aqua_mcp"]
 
 [tool.black]
 line-length = 100
