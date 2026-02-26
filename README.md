@@ -201,53 +201,6 @@ uv run ruff check src/
                                                 └─────────────────┘
 ```
 
-## Troubleshooting
-
-### Claude Desktop can't find `uvx` (macOS)
-
-**Symptom:** Claude Desktop shows an error like `spawn uvx ENOENT` or the MCP server fails to connect.
-
-**Cause:** macOS GUI apps don't inherit your shell's PATH. Claude Desktop only searches a limited set of paths (`/usr/bin`, `/usr/local/bin`, `/opt/homebrew/bin`), but `uvx` is typically installed in `~/.local/bin/` which is not included.
-
-**Fix:** Use the full absolute path to `uvx` in your config:
-
-```bash
-# Find your uvx path
-which uvx
-```
-
-Then update `~/.claude/claude_desktop_config.json` to use the full path:
-
-```json
-{
-  "mcpServers": {
-    "aqua-mcp": {
-      "command": "/Users/yourname/.local/bin/uvx",
-      "args": ["aqua-mcp"]
-    }
-  }
-}
-```
-
-### Server connects but tools don't work
-
-Make sure you're running the latest version:
-
-```bash
-uvx aqua-mcp@latest
-```
-
-### Wallet sync is slow
-
-The first sync after importing a wallet may take a minute. Subsequent syncs use cached data and are faster.
-
-## Contributing
-
-PRs welcome! Please read `AGENTS.md` for specs and conventions.
-
-## License
-
-MIT
 
 ## Credits
 
@@ -255,6 +208,3 @@ Built with:
 - [LWK](https://github.com/Blockstream/lwk) - Liquid Wallet Kit by Blockstream
 - [MCP](https://modelcontextprotocol.io/) - Model Context Protocol
 
----
-
-⚡ Built for the Liquid Network
