@@ -2,55 +2,64 @@
 
 ## Overview
 
-MCP (Model Context Protocol) server for interacting with the Liquid Network. Enables AI assistants to manage Liquid wallets through AQUA.
+MCP (Model Context Protocol) server for interacting with the **Liquid Network** and **Bitcoin**. Enables AI assistants to manage Liquid and Bitcoin wallets through AQUA. One mnemonic can back both networks (unified wallet).
 
-Built on top of **LWK (Liquid Wallet Kit)** Python bindings from Blockstream.
+Built on **LWK (Liquid Wallet Kit)** Python bindings from Blockstream and **BDK (Bitcoin Development Kit)** Python bindings for Bitcoin.
 
 ## Architecture
 
 ```
-AI Assistant ←→ MCP Server (Python) ←→ LWK Bindings ←→ Liquid Network
-                                              ↓
-                                    Electrum/Esplora (Blockstream public servers)
+AI Assistant ←→ MCP Server (Python) ←→ LWK (Liquid) ──→ Electrum/Esplora (Blockstream)
+                        │
+                        └──→ BDK (Bitcoin) ──→ Esplora (Blockstream)
 ```
 
-No local server required. Uses Blockstream's public infrastructure for blockchain sync.
+No local server required. Liquid uses Electrum/Esplora; Bitcoin uses Esplora only. All via Blockstream's public infrastructure.
 
 ## Tools
 
-All tools use the `lw_` prefix.
+Liquid tools use the `lw_` prefix; Bitcoin tools use the `btc_` prefix.
 
-### Wallet Management
-
-| Tool | Description | Parameters |
-|------|-------------|------------|
-| `lw_generate_mnemonic` | Generate a new BIP39 mnemonic | `words`: 12 or 24 (default: 12) |
-| `lw_import_mnemonic` | Import wallet from mnemonic | `mnemonic`: string, `network`: mainnet/testnet |
-| `lw_export_descriptor` | Export CT descriptor (watch-only) | `wallet_name`: string |
-| `lw_import_descriptor` | Import watch-only wallet from CT descriptor | `descriptor`: string, `wallet_name`: string |
-
-### Wallet Operations
+### Wallet Management (Liquid)
 
 | Tool | Description | Parameters |
 |------|-------------|------------|
-| `lw_balance` | Get wallet balance | `wallet_name`: string |
-| `lw_address` | Generate new receive address | `wallet_name`: string, `index`: optional |
-| `lw_transactions` | List transaction history | `wallet_name`: string, `limit`: optional |
-| `lw_utxos` | List unspent outputs | `wallet_name`: string |
+| `lw_generate_mnemonic` | Generate a new BIP39 mnemonic | (default: 12 words) |
+| `lw_import_mnemonic` | Import wallet from mnemonic; also creates Bitcoin wallet from same mnemonic (unified) | `mnemonic`: string, `wallet_name`: optional, `network`: mainnet/testnet, `passphrase`: optional |
+| `lw_export_descriptor` | Export CT descriptor (watch-only) | `wallet_name`: optional |
+| `lw_import_descriptor` | Import watch-only wallet from CT descriptor | `descriptor`: string, `wallet_name`: string, `network`: optional |
 
-### Transactions
-
-| Tool | Description | Parameters |
-|------|-------------|------------|
-| `lw_send` | Create, sign and broadcast transaction | `wallet_name`: string, `address`: string, `amount`: satoshis, `asset`: optional (default: L-BTC) |
-| `lw_send_asset` | Send a specific Liquid asset | `wallet_name`: string, `address`: string, `amount`: satoshis, `asset_id`: string |
-
-### Assets
+### Wallet Operations (Liquid)
 
 | Tool | Description | Parameters |
 |------|-------------|------------|
-| `lw_assets` | List assets in wallet | `wallet_name`: string |
-| `lw_asset_details` | Get asset metadata | `asset_id`: string |
+| `lw_balance` | Get wallet balance (all assets) | `wallet_name`: optional |
+| `lw_address` | Generate new receive address | `wallet_name`: optional, `index`: optional |
+| `lw_transactions` | List transaction history | `wallet_name`: optional, `limit`: optional |
+| `lw_list_wallets` | List all wallets | (none) |
+
+### Transactions (Liquid)
+
+| Tool | Description | Parameters |
+|------|-------------|------------|
+| `lw_send` | Create, sign and broadcast L-BTC transaction | `wallet_name`, `address`, `amount` (sats), `passphrase`: optional |
+| `lw_send_asset` | Send a specific Liquid asset | `wallet_name`, `address`, `amount`, `asset_id`, `passphrase`: optional |
+| `lw_tx_status` | Get transaction status (txid or Blockstream URL) | `tx`: string |
+
+### Bitcoin (btc_*)
+
+| Tool | Description | Parameters |
+|------|-------------|------------|
+| `btc_balance` | Get Bitcoin wallet balance in satoshis | `wallet_name`: optional |
+| `btc_address` | Generate Bitcoin receive address (bc1...) | `wallet_name`: optional, `index`: optional |
+| `btc_transactions` | List Bitcoin transaction history | `wallet_name`: optional, `limit`: optional |
+| `btc_send` | Send BTC to an address | `wallet_name`, `address`, `amount` (sats), `fee_rate`: optional, `passphrase`: optional |
+
+### Unified
+
+| Tool | Description | Parameters |
+|------|-------------|------------|
+| `unified_balance` | Get balance for both Bitcoin and Liquid | `wallet_name`: optional |
 
 ## Data Storage
 
@@ -71,11 +80,15 @@ Wallet data stored in `~/.aqua-mcp/`:
   "name": "default",
   "network": "mainnet",
   "descriptor": "ct(slip77(...),elwpkh(...))",
-  "encrypted_mnemonic": "...",  // Optional, if full wallet
+  "btc_descriptor": "wpkh([...]/0/*)#...",
+  "btc_change_descriptor": "wpkh([...]/1/*)#...",
+  "encrypted_mnemonic": "...",
   "watch_only": false,
   "created_at": "2026-02-20T12:00:00Z"
 }
 ```
+
+`btc_descriptor` and `btc_change_descriptor` (BIP84) are set when the wallet is imported from mnemonic (unified wallet). Omitted for watch-only or descriptor-only imports.
 
 ## Security Considerations
 
@@ -86,14 +99,24 @@ Wallet data stored in `~/.aqua-mcp/`:
 
 ## Networks
 
+**Liquid**
+
 | Network | Electrum Server | Esplora |
 |---------|-----------------|---------|
 | Mainnet | `blockstream.info:995` | `https://blockstream.info/liquid/api` |
 | Testnet | `blockstream.info:465` | `https://blockstream.info/liquidtestnet/api` |
 
+**Bitcoin**
+
+| Network | Esplora |
+|---------|---------|
+| Mainnet | `https://blockstream.info/api` |
+| Testnet | `https://blockstream.info/testnet/api` |
+
 ## Dependencies
 
 - `lwk` - Liquid Wallet Kit Python bindings
+- `bdkpython` - Bitcoin Development Kit Python bindings (>=2.2.0)
 - `mcp` - Model Context Protocol SDK
 - `cryptography` - For mnemonic encryption
 
@@ -116,27 +139,34 @@ All tools return structured errors:
 
 ## Example Flows
 
-### Create New Wallet
+### Create New Wallet (Unified)
 
 ```
-1. lw_generate_mnemonic(words=12)
-   → "abandon abandon abandon..."
+1. lw_generate_mnemonic()
+   → { "mnemonic": "abandon abandon ...", "words": 12 }
 
 2. lw_import_mnemonic(mnemonic="...", network="mainnet")
-   → { "wallet_name": "default", "descriptor": "ct(...)" }
+   → { "wallet_name": "default", "descriptor": "ct(...)", "btc_descriptor": "wpkh(...)" }
 
-3. lw_address(wallet_name="default")
-   → { "address": "lq1...", "index": 0 }
+3. lw_address(wallet_name="default")   → Liquid address (lq1...)
+   btc_address(wallet_name="default")   → Bitcoin address (bc1...)
 ```
 
 ### Check Balance & Send
 
 ```
 1. lw_balance(wallet_name="default")
-   → { "L-BTC": 100000, "USDT": 5000000 }
+   → { "balances": [{ "ticker": "L-BTC", "amount_sats": 100000 }, ...] }
 
-2. lw_send(wallet_name="default", address="lq1...", amount=50000)
-   → { "txid": "abc123...", "fee": 250 }
+2. unified_balance(wallet_name="default")
+   → { "bitcoin": { "balance_sats": 50000 }, "liquid": { "balances": [...] } }
+
+3. lw_send(wallet_name="default", address="lq1...", amount=50000)
+   → { "txid": "abc123...", "amount": 50000 }
+
+4. btc_balance(wallet_name="default")  → { "balance_sats": 0, "balance_btc": 0 }
+   btc_send(wallet_name="default", address="bc1...", amount=10000, passphrase="...")
+   → { "txid": "...", "amount": 10000 }
 ```
 
 ### Watch-Only Import
@@ -146,7 +176,7 @@ All tools return structured errors:
    → { "wallet_name": "cold", "watch_only": true }
 
 2. lw_balance(wallet_name="cold")
-   → { "L-BTC": 500000 }
+   → { "balances": [...] }
 ```
 
 ## Development
@@ -156,7 +186,6 @@ All tools return structured errors:
 ```
 aqua-mcp/
 ├── AGENTS.md           # This file (specs)
-├── claude.md           # Symlink to AGENTS.md
 ├── README.md           # User documentation
 ├── pyproject.toml      # Python package config
 ├── src/
@@ -164,33 +193,39 @@ aqua-mcp/
 │       ├── __init__.py
 │       ├── server.py   # MCP server entry point
 │       ├── tools.py    # Tool implementations
-│       ├── wallet.py   # Wallet management
+│       ├── wallet.py   # Liquid wallet (LWK)
+│       ├── bitcoin.py  # Bitcoin wallet (BDK)
+│       ├── assets.py   # Asset registry
 │       └── storage.py  # Persistence layer
 └── tests/
-    └── test_wallet.py
+    ├── test_tools.py
+    ├── test_storage.py
+    └── test_bitcoin.py
 ```
 
 ### Running Tests
 
 ```bash
-pytest tests/
+uv sync --all-extras
+uv run python -m pytest tests/
 ```
 
 ### Local Development
 
 ```bash
-pip install -e ".[dev]"
-python -m aqua_mcp.server
+uv sync
+uv run python -m aqua_mcp.server
 ```
 
 ## Roadmap
 
-- [ ] v0.1 - Basic wallet operations (generate, import, balance, address)
-- [ ] v0.2 - Send transactions
-- [ ] v0.3 - Asset management
-- [ ] v0.4 - Multi-wallet support
+- [x] v0.1 - Basic wallet operations (generate, import, balance, address)
+- [x] v0.2 - Send transactions (Liquid)
+- [x] v0.3 - Asset support (L-BTC, USDT, etc. in balance/send)
+- [x] v0.4 - Multi-wallet support
+- [x] Bitcoin onchain (BDK) - unified wallet, one mnemonic two networks
 - [ ] v0.5 - Hardware wallet integration (Jade)
 
 ---
 
-*Last updated: 2026-02-20*
+*Last updated: 2026-02-26*
