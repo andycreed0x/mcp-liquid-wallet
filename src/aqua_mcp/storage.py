@@ -114,6 +114,24 @@ class Storage:
         f = Fernet(key)
         return f.decrypt(encrypted_data).decode()
 
+    def store_mnemonic(self, mnemonic: str, passphrase: Optional[str] = None) -> str:
+        """Store mnemonic, encrypting only when a passphrase is provided."""
+        if passphrase:
+            return self.encrypt_mnemonic(mnemonic, passphrase)
+        return "plain:" + base64.b64encode(mnemonic.encode()).decode()
+
+    def retrieve_mnemonic(self, stored: str, passphrase: Optional[str] = None) -> str:
+        """Retrieve mnemonic stored by store_mnemonic."""
+        if stored.startswith("plain:"):
+            return base64.b64decode(stored[6:]).decode()
+        if not passphrase:
+            raise ValueError("Passphrase required to decrypt mnemonic")
+        return self.decrypt_mnemonic(stored, passphrase)
+
+    def is_mnemonic_encrypted(self, stored: str) -> bool:
+        """Check whether a stored mnemonic requires a passphrase."""
+        return not stored.startswith("plain:")
+
     # Config operations
 
     def load_config(self) -> Config:

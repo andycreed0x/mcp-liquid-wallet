@@ -633,20 +633,17 @@ class TestWalletManagerInternals:
         isolated_manager.load_wallet("restore_test", passphrase="mypass")
         assert "restore_test" in isolated_manager._signers
 
-    def test_send_no_mnemonic_no_passphrase_raises(self, isolated_manager):
-        """Wallet without stored mnemonic and no passphrase cannot sign."""  # Significance: 4
+    def test_send_no_passphrase_uses_plaintext_mnemonic(self, isolated_manager):
+        """Wallet imported without passphrase stores mnemonic as plaintext and can sign."""
         lw_import_mnemonic(mnemonic=TEST_MNEMONIC, wallet_name="no_sign")
-        # Simulate: wallet saved without encrypted mnemonic but signer lost
         isolated_manager._signers.pop("no_sign", None)
         wallet = isolated_manager.storage.load_wallet("no_sign")
-        assert wallet.encrypted_mnemonic is None
+        assert wallet.encrypted_mnemonic is not None
+        assert wallet.encrypted_mnemonic.startswith("plain:")
+        assert not isolated_manager.storage.is_mnemonic_encrypted(wallet.encrypted_mnemonic)
 
-        with pytest.raises(ValueError, match="No mnemonic available"):
-            isolated_manager.send(
-                "no_sign",
-                "lq1qqvxk052kf3qtkxmrakx50a9gc3smqad2ync54hzntjt980kfej9kkfe0247rp5h4yzmdftsahhw64uy8pzfe7cpg4fgykm7cv",
-                100,
-            )
+        isolated_manager.load_wallet("no_sign")
+        assert "no_sign" in isolated_manager._signers
 
 
 # ---------------------------------------------------------------------------

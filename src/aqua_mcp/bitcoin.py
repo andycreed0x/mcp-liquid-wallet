@@ -57,6 +57,25 @@ def _network_bdk(network: str) -> bdk.Network:
     raise ValueError(f"Unknown network: {network}")
 
 
+def _extract_confirmation_height(tx: object) -> Optional[int]:
+    """Best-effort extraction of tx confirmation height across bdkpython shapes."""
+    # Older bindings may expose direct heights on the tx record.
+    height = getattr(tx, "height", None) or getattr(tx, "confirmation_height", None)
+    if height is not None:
+        return height
+
+    # Newer bindings expose chain_position enums, where confirmed data
+    # is nested under confirmation_block_time.block_id.height.
+    cp = getattr(tx, "chain_position", None)
+    if cp is None:
+        return None
+    cbt = getattr(cp, "confirmation_block_time", None)
+    if cbt is None:
+        return None
+    block_id = getattr(cbt, "block_id", None)
+    return getattr(block_id, "height", None)
+
+
 class BitcoinWalletManager:
     """Manages Bitcoin wallets using BDK."""
 
@@ -178,8 +197,11 @@ class BitcoinWalletManager:
         )
         cache_path = self._get_btc_cache_path(wallet_name)
         persister = bdk.Persister.new_sqlite(str(cache_path))
-        wallet = bdk.Wallet(external_desc, change_desc, net, persister)
-        wallet.persist(persister)
+        wallet = bdk.Wallet.load(
+            external_desc,
+            change_desc,
+            persister,
+        )
         self._wallets[wallet_name] = wallet
         self._persisters[wallet_name] = persister
         return wallet, wallet_data.network
@@ -233,10 +255,7 @@ class BitcoinWalletManager:
         result = []
         for tx in txs:
             txid = tx.transaction.compute_txid().serialize().hex()
-            height = getattr(tx, "height", None) or getattr(tx, "confirmation_height", None)
-            if height is None and hasattr(tx, "chain_position"):
-                cp = tx.chain_position
-                height = cp.height if cp else None
+            height = _extract_confirmation_height(tx)
             received = getattr(tx, "received", 0) or 0
             sent = getattr(tx, "sent", 0) or 0
             fee = getattr(tx, "fee", None)
@@ -269,11 +288,12 @@ class BitcoinWalletManager:
             raise ValueError("Cannot sign with watch-only wallet")
         if not wallet_data.encrypted_mnemonic:
             raise ValueError(
-                "No mnemonic available for signing (import with passphrase to enable sending)"
+                "No mnemonic available for signing (import wallet with mnemonic to enable sending)"
             )
-        if not passphrase:
+        needs_passphrase = self.storage.is_mnemonic_encrypted(wallet_data.encrypted_mnemonic)
+        if needs_passphrase and not passphrase:
             raise ValueError("Passphrase required to decrypt mnemonic")
-        mnemonic = self.storage.decrypt_mnemonic(
+        mnemonic = self.storage.retrieve_mnemonic(
             wallet_data.encrypted_mnemonic, passphrase
         )
         wallet, network = self._get_wallet_with_signer(
@@ -287,9 +307,9 @@ class BitcoinWalletManager:
         amt = bdk.Amount.from_sat(amount)
 
         builder = bdk.TxBuilder()
-        builder.add_recipient(spk, amt)
+        builder = builder.add_recipient(spk, amt)
         if fee_rate is not None:
-            builder.fee_rate(bdk.FeeRate.from_sat_per_vb(fee_rate))
+            builder = builder.fee_rate(bdk.FeeRate.from_sat_per_vb(fee_rate))
 
         psbt = builder.finish(wallet)
         sign_opts = bdk.SignOptions(

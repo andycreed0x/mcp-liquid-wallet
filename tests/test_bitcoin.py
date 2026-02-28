@@ -7,7 +7,7 @@ from unittest.mock import MagicMock, patch
 import lwk
 import pytest
 
-from aqua_mcp.bitcoin import BitcoinWalletManager
+from aqua_mcp.bitcoin import BitcoinWalletManager, _extract_confirmation_height
 from aqua_mcp.storage import Storage, WalletData
 from aqua_mcp.tools import (
     btc_address,
@@ -117,6 +117,53 @@ class TestBitcoinWalletManager:
         with pytest.raises(ValueError, match="watch-only|no Bitcoin descriptors|not found"):
             btc_send(wallet_name="watch", address="bc1qxy2kgdygjrsqtzq2n0yrf2493p83kkfjhx0wlh", amount=1000)
 
+    def test_get_wallet_with_signer_loads_existing_persisted_wallet(self, isolated_managers):
+        """Signer wallet path should load existing DB instead of recreating it."""
+        manager, btc_manager = isolated_managers
+        manager.import_mnemonic(TEST_MNEMONIC, "signer", "mainnet")
+        btc_manager.create_wallet(TEST_MNEMONIC, "signer", "mainnet")
+
+        wallet, network = btc_manager._get_wallet_with_signer(
+            "signer",
+            TEST_MNEMONIC,
+            None,
+        )
+        assert wallet is not None
+        assert network == "mainnet"
+
+        # A second load must not fail with DataAlreadyExists.
+        wallet2, network2 = btc_manager._get_wallet_with_signer(
+            "signer",
+            TEST_MNEMONIC,
+            None,
+        )
+        assert wallet2 is not None
+        assert network2 == "mainnet"
+
+
+class TestTransactionHeightExtraction:
+    def test_extract_confirmation_height_from_chain_position(self):
+        class BlockId:
+            height = 123
+
+        class ConfirmationBlockTime:
+            block_id = BlockId()
+
+        class ChainPosition:
+            confirmation_block_time = ConfirmationBlockTime()
+
+        class TxRecord:
+            chain_position = ChainPosition()
+
+        assert _extract_confirmation_height(TxRecord()) == 123
+
+    def test_extract_confirmation_height_prefers_direct_height(self):
+        class TxRecord:
+            height = 456
+            chain_position = None
+
+        assert _extract_confirmation_height(TxRecord()) == 456
+
 
 # ---------------------------------------------------------------------------
 # Unified import and unified_balance
@@ -157,7 +204,8 @@ class TestUnifiedImportAndBalance:
         manager.import_descriptor(desc, "liquid_only", "mainnet")
         result = unified_balance(wallet_name="liquid_only")
         assert result["wallet_name"] == "liquid_only"
-        assert result["bitcoin"]["balance_sats"] == 0
+        assert result["bitcoin"] is None
+        assert "bitcoin_error" in result
         assert "liquid" in result
 
 
