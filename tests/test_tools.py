@@ -485,6 +485,18 @@ class TestSend:
         with pytest.raises(ValueError, match="not found"):
             lw_send(wallet_name="ghost", address=self.DEST_ADDRESS, amount=100)
 
+    def test_send_zero_amount_raises(self):
+        """Sending zero satoshis raises ValueError."""
+        lw_import_mnemonic(mnemonic=TEST_MNEMONIC, wallet_name="zero_send")
+        with pytest.raises(ValueError, match="Amount must be positive"):
+            lw_send(wallet_name="zero_send", address=self.DEST_ADDRESS, amount=0)
+
+    def test_send_negative_amount_raises(self):
+        """Sending negative satoshis raises ValueError."""
+        lw_import_mnemonic(mnemonic=TEST_MNEMONIC, wallet_name="neg_send")
+        with pytest.raises(ValueError, match="Amount must be positive"):
+            lw_send(wallet_name="neg_send", address=self.DEST_ADDRESS, amount=-100)
+
     def test_send_without_passphrase_when_encrypted_raises(self):
         """Encrypted wallet requires passphrase for send."""  # Significance: 4
         lw_import_mnemonic(
@@ -574,6 +586,28 @@ class TestSendAsset:
         assert isinstance(call_args[0], lwk.Address)
         assert call_args[1] == 100
         assert call_args[2] == self.FAKE_ASSET_ID
+
+    def test_send_asset_zero_amount_raises(self):
+        """Sending zero satoshis of an asset raises ValueError."""
+        lw_import_mnemonic(mnemonic=TEST_MNEMONIC, wallet_name="zero_asset")
+        with pytest.raises(ValueError, match="Amount must be positive"):
+            lw_send_asset(
+                wallet_name="zero_asset",
+                address=self.DEST_ADDRESS,
+                amount=0,
+                asset_id=self.FAKE_ASSET_ID,
+            )
+
+    def test_send_asset_negative_amount_raises(self):
+        """Sending negative satoshis of an asset raises ValueError."""
+        lw_import_mnemonic(mnemonic=TEST_MNEMONIC, wallet_name="neg_asset")
+        with pytest.raises(ValueError, match="Amount must be positive"):
+            lw_send_asset(
+                wallet_name="neg_asset",
+                address=self.DEST_ADDRESS,
+                amount=-50,
+                asset_id=self.FAKE_ASSET_ID,
+            )
 
     def test_send_asset_from_watch_only_raises(self):
         """Cannot send asset from watch-only wallet."""  # Significance: 4

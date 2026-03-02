@@ -117,6 +117,40 @@ class TestBitcoinWalletManager:
         with pytest.raises(ValueError, match="watch-only|no Bitcoin descriptors|not found"):
             btc_send(wallet_name="watch", address="bc1qxy2kgdygjrsqtzq2n0yrf2493p83kkfjhx0wlh", amount=1000)
 
+    def test_btc_send_zero_amount_raises(self, isolated_managers):
+        """Sending zero satoshis raises ValueError."""
+        lw_import_mnemonic(mnemonic=TEST_MNEMONIC, wallet_name="zero_btc", network="mainnet")
+        with pytest.raises(ValueError, match="Amount must be positive"):
+            btc_send(wallet_name="zero_btc", address="bc1qxy2kgdygjrsqtzq2n0yrf2493p83kkfjhx0wlh", amount=0)
+
+    def test_btc_send_negative_amount_raises(self, isolated_managers):
+        """Sending negative satoshis raises ValueError."""
+        lw_import_mnemonic(mnemonic=TEST_MNEMONIC, wallet_name="neg_btc", network="mainnet")
+        with pytest.raises(ValueError, match="Amount must be positive"):
+            btc_send(wallet_name="neg_btc", address="bc1qxy2kgdygjrsqtzq2n0yrf2493p83kkfjhx0wlh", amount=-500)
+
+    def test_btc_send_zero_fee_rate_raises(self, isolated_managers):
+        """Fee rate of zero raises ValueError."""
+        lw_import_mnemonic(mnemonic=TEST_MNEMONIC, wallet_name="zero_fee", network="mainnet")
+        with pytest.raises(ValueError, match="Fee rate must be positive"):
+            btc_send(
+                wallet_name="zero_fee",
+                address="bc1qxy2kgdygjrsqtzq2n0yrf2493p83kkfjhx0wlh",
+                amount=1000,
+                fee_rate=0,
+            )
+
+    def test_btc_send_negative_fee_rate_raises(self, isolated_managers):
+        """Negative fee rate raises ValueError."""
+        lw_import_mnemonic(mnemonic=TEST_MNEMONIC, wallet_name="neg_fee", network="mainnet")
+        with pytest.raises(ValueError, match="Fee rate must be positive"):
+            btc_send(
+                wallet_name="neg_fee",
+                address="bc1qxy2kgdygjrsqtzq2n0yrf2493p83kkfjhx0wlh",
+                amount=1000,
+                fee_rate=-5,
+            )
+
     def test_get_wallet_with_signer_loads_existing_persisted_wallet(self, isolated_managers):
         """Signer wallet path should load existing DB instead of recreating it."""
         manager, btc_manager = isolated_managers
