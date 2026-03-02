@@ -254,7 +254,7 @@ class BitcoinWalletManager:
             txs = txs[:limit]
         result = []
         for tx in txs:
-            txid = tx.transaction.compute_txid().serialize().hex()
+            txid = tx.transaction.compute_txid().serialize()[::-1].hex()
             height = _extract_confirmation_height(tx)
             received = getattr(tx, "received", 0) or 0
             sent = getattr(tx, "sent", 0) or 0
@@ -330,4 +330,4 @@ class BitcoinWalletManager:
         tx = psbt.extract_tx()
         client = self._get_client(network)
         client.broadcast(tx)
-        return tx.compute_txid().serialize().hex()
+        return tx.compute_txid().serialize()[::-1].hex()
