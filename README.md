@@ -71,7 +71,7 @@ Configure Claude Desktop:
 
 ## Quick Start
 
-### 3. Use with Claude
+### Use with Claude
 
 Once connected, you can ask Claude to:
 
