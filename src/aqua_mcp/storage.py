@@ -227,7 +227,6 @@ class Storage:
         if not path.exists():
             return False
         path.unlink()
-        _validate_wallet_name(name)
         cache_path = self.cache_dir / name
         if cache_path.is_dir():
             shutil.rmtree(cache_path)
