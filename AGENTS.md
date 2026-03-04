@@ -135,7 +135,7 @@ Wallet data stored in `~/.aqua-mcp/`:
 
 ## Security Considerations
 
-1. **Mnemonic Storage**: Mnemonics are encrypted at rest using PBKDF2 (480k iterations) + Fernet. Stored as `plain:b64` (no passphrase) or encrypted string
+1. **Mnemonic Storage**: When a passphrase is provided, it is used as the password to encrypt the mnemonic at rest (PBKDF2 480k iterations + Fernet). Without passphrase, the mnemonic is stored as base64 (not encrypted)
 2. **Watch-Only Mode**: Supports CT descriptors for balance checking without signing capability
 3. **No Server**: All operations are local + public Electrum/Esplora servers
 4. **Network Isolation**: Mainnet/testnet wallets are kept separate
