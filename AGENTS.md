@@ -171,8 +171,8 @@ Wallet data stored in `~/.aqua-mcp/`:
 
 | Constant | Value | Purpose |
 |----------|-------|---------|
-| `STOP_GAP` | 50 | Max consecutive unused addresses to scan before stopping |
-| `PARALLEL_REQUESTS` | 5 | Concurrent Esplora API requests during full_scan |
+| `STOP_GAP` | 20 | Max consecutive unused addresses to scan before stopping |
+| `PARALLEL_REQUESTS` | 3 | Concurrent Esplora API requests during full_scan |
 
 ### BDK Send Flow
 

@@ -727,7 +727,7 @@ Use lw_export_descriptor and explain:
 2. Generate a strong passphrase (or let the system generate one)
 3. Import it: `lw_import_mnemonic(mnemonic="your 12 words", network="mainnet", passphrase="your-passphrase")`
 4. This creates BOTH a Liquid and Bitcoin wallet from the same mnemonic
-5. **BACKUP BOTH**: Save mnemonic + passphrase securely offline
+5. **BACKUP BOTH**: Ask user to save mnemonic + passphrase securely offline
 
 ## Creating Without Passphrase (Not Recommended)
 
@@ -795,7 +795,7 @@ Note: If wallet has no passphrase, omit the passphrase parameter"""
 | Finality | 6 blocks | 2 blocks |
 | Assets | BTC only | Multiple assets |
 | Privacy | Public amounts | Confidential amounts |
-| Fees | Dynamic (sat/vB) | Fixed (~100 sats) |"""
+| Fees | Dynamic (sat/vB) | Fixed (~33 sats) |"""
 
         elif uri == "aqua://docs/security":
             return """# Security Best Practices
@@ -883,13 +883,8 @@ If you have:
             return [TextContent(type="text", text=f"Unknown tool: {name}")]
 
         try:
-            # Get the tool function
             tool_fn = TOOLS[name]
-            
-            # Call the tool
             result = tool_fn(**arguments)
-            
-            # Format result
             return [
                 TextContent(
                     type="text",

@@ -14,8 +14,8 @@ ESPLORA_URLS = {
     "testnet": "https://blockstream.info/testnet/api",
 }
 
-STOP_GAP = 50
-PARALLEL_REQUESTS = 5
+STOP_GAP = 20
+PARALLEL_REQUESTS = 3
 
 
 @dataclass
