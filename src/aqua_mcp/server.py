@@ -311,6 +311,41 @@ TOOL_SCHEMAS = {
             },
         },
     },
+    "lbtc_pay_lightning_invoice": {
+        "description": "Pay a Lightning invoice using L-BTC via Boltz submarine swap. Sends L-BTC from a Liquid wallet to pay a BOLT11 Lightning invoice.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "invoice": {
+                    "type": "string",
+                    "description": "BOLT11 Lightning invoice (starts with lnbc...)",
+                },
+                "wallet_name": {
+                    "type": "string",
+                    "description": "Liquid wallet to pay from",
+                    "default": "default",
+                },
+                "passphrase": {
+                    "type": "string",
+                    "description": "Passphrase to decrypt mnemonic (if encrypted)",
+                },
+            },
+            "required": ["invoice"],
+        },
+    },
+    "lbtc_swap_lightning_status": {
+        "description": "Check the status of a Boltz submarine swap (Lightning payment via L-BTC)",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "swap_id": {
+                    "type": "string",
+                    "description": "Boltz swap ID returned from lbtc_pay_lightning_invoice",
+                },
+            },
+            "required": ["swap_id"],
+        },
+    },
 }
 
 

@@ -560,7 +560,103 @@ def lbtc_pay_lightning_invoice(
     Returns:
         swap_id, lockup_txid, status, expected_amount, timeout_block_height
     """
-    raise NotImplementedError
+    # Step 1: Validate invoice format
+    if not invoice or not invoice.startswith("lnbc"):
+        raise ValueError("Invalid invoice: must be a BOLT11 Lightning invoice starting with 'lnbc'")
+
+    manager = get_manager()
+
+    # Verify wallet exists and is usable
+    wallet_data = manager.storage.load_wallet(wallet_name)
+    if not wallet_data:
+        raise ValueError(f"Wallet '{wallet_name}' not found")
+    if wallet_data.watch_only:
+        raise ValueError("Watch-only wallet cannot sign transactions")
+    if wallet_data.encrypted_mnemonic and manager.storage.is_mnemonic_encrypted(
+        wallet_data.encrypted_mnemonic
+    ):
+        if not passphrase:
+            raise ValueError("Passphrase required to decrypt mnemonic")
+
+    network = wallet_data.network
+
+    # Step 2: Get pair info and create swap
+    client = BoltzClient(network=network)
+    pairs = client.get_submarine_pairs()
+
+    pair = pairs.get("L-BTC", {}).get("BTC")
+    if not pair:
+        raise ValueError("L-BTC/BTC pair not available on Boltz")
+
+    limits = pair["limits"]
+
+    # Step 3: Generate ephemeral keypair
+    refund_privkey, refund_pubkey = generate_keypair()
+
+    # Step 4: Create submarine swap
+    swap_resp = client.create_submarine_swap(invoice, refund_pubkey)
+
+    expected_amount = swap_resp["expectedAmount"]
+
+    # Validate amount against limits
+    if expected_amount < limits["minimal"]:
+        raise ValueError(
+            f"Amount below minimum: {expected_amount} < {limits['minimal']} sats"
+        )
+    if expected_amount > limits["maximal"]:
+        raise ValueError(
+            f"Amount above maximum: {expected_amount} > {limits['maximal']} sats"
+        )
+
+    # Step 5: Build SwapInfo and persist BEFORE sending
+    from datetime import datetime
+
+    swap = SwapInfo(
+        swap_id=swap_resp["id"],
+        address=swap_resp["address"],
+        expected_amount=expected_amount,
+        claim_public_key=swap_resp["claimPublicKey"],
+        swap_tree=swap_resp["swapTree"],
+        timeout_block_height=swap_resp["timeoutBlockHeight"],
+        refund_private_key=refund_privkey,
+        refund_public_key=refund_pubkey,
+        invoice=invoice,
+        status="swap.created",
+        network=network,
+        created_at=datetime.utcnow().isoformat(),
+    )
+    manager.storage.save_swap(swap)
+
+    # Step 6: Check balance
+    balances = manager.get_balance(wallet_name)
+    lbtc_balance = 0
+    for b in balances:
+        if b.ticker == "L-BTC":
+            lbtc_balance = b.amount
+            break
+
+    if lbtc_balance < expected_amount:
+        raise ValueError(
+            f"Insufficient L-BTC balance: have {lbtc_balance} sats, need {expected_amount} sats"
+        )
+
+    # Step 7: Send L-BTC to lockup address
+    lockup_txid = manager.send(
+        wallet_name, swap.address, expected_amount, passphrase=passphrase
+    )
+
+    # Update swap with lockup txid
+    swap.lockup_txid = lockup_txid
+    swap.status = "transaction.mempool"
+    manager.storage.save_swap(swap)
+
+    return {
+        "swap_id": swap.swap_id,
+        "lockup_txid": lockup_txid,
+        "status": swap.status,
+        "expected_amount": expected_amount,
+        "timeout_block_height": swap.timeout_block_height,
+    }
 
 
 def lbtc_swap_lightning_status(swap_id: str) -> dict[str, Any]:
@@ -572,7 +668,50 @@ def lbtc_swap_lightning_status(swap_id: str) -> dict[str, Any]:
     Returns:
         swap_id, status, lockup_txid, timeout_block_height, network
     """
-    raise NotImplementedError
+    manager = get_manager()
+    swap = manager.storage.load_swap(swap_id)
+    if not swap:
+        raise ValueError(f"Swap not found: {swap_id}")
+
+    # Try to fetch remote status from Boltz
+    client = BoltzClient(network=swap.network)
+    warning = None
+    try:
+        remote = client.get_swap_status(swap_id)
+        swap.status = remote["status"]
+        manager.storage.save_swap(swap)
+    except Exception as e:
+        warning = f"Could not fetch remote status: {e}"
+
+    result: dict[str, Any] = {
+        "swap_id": swap.swap_id,
+        "status": swap.status,
+        "lockup_txid": swap.lockup_txid,
+        "timeout_block_height": swap.timeout_block_height,
+        "network": swap.network,
+    }
+
+    # If claimed, fetch preimage
+    if swap.status == "transaction.claimed":
+        try:
+            claim = client.get_claim_details(swap_id)
+            result["preimage"] = claim.get("preimage")
+            result["claim_txid"] = claim.get("transactionHash")
+        except Exception:
+            pass
+
+    # If failed, provide refund info
+    FAILURE_STATUSES = {"invoice.failedToPay", "swap.expired", "transaction.lockupFailed"}
+    if swap.status in FAILURE_STATUSES:
+        result["refund_info"] = (
+            f"Swap failed. Refund available after block {swap.timeout_block_height}. "
+            f"Swap ID: {swap.swap_id}"
+        )
+
+    if warning:
+        result["warning"] = warning
+
+    return result
 
 
 # Tool registry for MCP

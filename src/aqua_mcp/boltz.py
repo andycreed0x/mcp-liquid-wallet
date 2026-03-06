@@ -1,12 +1,14 @@
 """Boltz Exchange integration for submarine swaps (L-BTC -> Lightning)."""
 
-import urllib.request
-import urllib.error
+import hashlib
 import json
-from dataclasses import dataclass, field, asdict
-from datetime import datetime
+import secrets
+import urllib.error
+import urllib.request
+from dataclasses import asdict, dataclass
 from typing import Optional
 
+import coincurve
 
 BOLTZ_API = {
     "mainnet": "https://api.boltz.exchange",
@@ -42,34 +44,59 @@ class BoltzClient:
     """HTTP client for Boltz API v2."""
 
     def __init__(self, network: str = "mainnet"):
-        raise NotImplementedError
+        self.base_url = BOLTZ_API[network]
+        self.network = network
+
+    def _api_request(self, method: str, path: str, body: dict | None = None) -> dict:
+        """Make HTTP request to Boltz API."""
+        url = f"{self.base_url}{path}"
+        data = json.dumps(body).encode() if body else None
+        req = urllib.request.Request(
+            url,
+            data=data,
+            method=method,
+            headers={
+                "Content-Type": "application/json",
+                "User-Agent": "aqua-mcp",
+            },
+        )
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            return json.loads(resp.read().decode())
 
     def get_submarine_pairs(self) -> dict:
         """GET /v2/swap/submarine - fetch available pairs, fees, limits."""
-        raise NotImplementedError
+        return self._api_request("GET", "/v2/swap/submarine")
 
     def create_submarine_swap(self, invoice: str, refund_public_key: str) -> dict:
         """POST /v2/swap/submarine - create a new swap."""
-        raise NotImplementedError
+        return self._api_request("POST", "/v2/swap/submarine", {
+            "invoice": invoice,
+            "from": "L-BTC",
+            "to": "BTC",
+            "refundPublicKey": refund_public_key,
+        })
 
     def get_swap_status(self, swap_id: str) -> dict:
-        """POST /v2/swap/{swap_id} - get current swap status."""
-        raise NotImplementedError
+        """GET /v2/swap/{swap_id} - get current swap status."""
+        return self._api_request("GET", f"/v2/swap/{swap_id}")
 
     def get_claim_details(self, swap_id: str) -> dict:
         """GET /v2/swap/submarine/{swap_id}/claim - get preimage after invoice paid."""
-        raise NotImplementedError
+        return self._api_request("GET", f"/v2/swap/submarine/{swap_id}/claim")
 
 
 def generate_keypair() -> tuple[str, str]:
     """Generate ephemeral secp256k1 keypair for refund.
 
     Returns (private_key_hex, public_key_hex).
-    Uses coincurve for key derivation.
     """
-    raise NotImplementedError
+    privkey = secrets.token_bytes(32)
+    pubkey = coincurve.PublicKey.from_secret(privkey)
+    return privkey.hex(), pubkey.format(compressed=True).hex()
 
 
 def verify_preimage(preimage_hex: str, expected_hash_hex: str) -> bool:
     """Verify SHA256(preimage) == expected_hash. Pure stdlib."""
-    raise NotImplementedError
+    preimage = bytes.fromhex(preimage_hex)
+    computed = hashlib.sha256(preimage).hexdigest()
+    return computed == expected_hash_hex.lower()

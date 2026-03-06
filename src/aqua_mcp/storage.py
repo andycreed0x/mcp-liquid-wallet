@@ -241,15 +241,45 @@ class Storage:
 
     def save_swap(self, swap) -> None:
         """Save swap data for recovery."""
-        raise NotImplementedError
+        path = self.swaps_dir / f"{swap.swap_id}.json"
+        tmp_path = path.with_suffix(path.suffix + ".tmp")
+        try:
+            with open(tmp_path, "w", encoding="utf-8") as f:
+                json.dump(swap.to_dict(), f, indent=2)
+                f.flush()
+                os.fsync(f.fileno())
+            if hasattr(os, "chmod"):
+                try:
+                    os.chmod(tmp_path, 0o600)
+                except OSError:
+                    pass
+            os.replace(tmp_path, path)
+            if hasattr(os, "chmod"):
+                try:
+                    os.chmod(path, 0o600)
+                except OSError:
+                    pass
+        except Exception:
+            if tmp_path.exists():
+                try:
+                    tmp_path.unlink()
+                except OSError:
+                    pass
+            raise
 
     def load_swap(self, swap_id: str):
         """Load swap data. Returns SwapInfo or None."""
-        raise NotImplementedError
+        from .boltz import SwapInfo
+
+        path = self.swaps_dir / f"{swap_id}.json"
+        if not path.exists():
+            return None
+        with open(path) as f:
+            return SwapInfo(**json.load(f))
 
     def list_swaps(self) -> list[str]:
         """List all swap IDs."""
-        raise NotImplementedError
+        return [p.stem for p in self.swaps_dir.glob("*.json")]
 
     # Cache operations
 
