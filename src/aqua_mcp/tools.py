@@ -6,11 +6,13 @@ import re
 import urllib.request
 import urllib.error
 from typing import Any
+from datetime import datetime, UTC
 
 logger = logging.getLogger(__name__)
 
 from .assets import resolve_asset_name
 from .bitcoin import BitcoinWalletManager
+from .boltz import BoltzClient, SwapInfo, generate_keypair
 from .wallet import WalletManager
 
 
@@ -539,6 +541,167 @@ def lw_list_wallets() -> dict[str, Any]:
     }
 
 
+# ---------------------------------------------------------------------------
+# Lightning (Boltz submarine swap) tools
+# ---------------------------------------------------------------------------
+
+
+def lbtc_pay_lightning_invoice(
+    invoice: str,
+    wallet_name: str = "default",
+    passphrase: str | None = None,
+) -> dict[str, Any]:
+    """Pay a Lightning invoice using L-BTC via Boltz submarine swap.
+
+    Args:
+        invoice: BOLT11 Lightning invoice (lnbc...)
+        wallet_name: Liquid wallet to pay from. Default: "default"
+        passphrase: Passphrase to decrypt mnemonic (if encrypted)
+
+    Returns:
+        swap_id, lockup_txid, status, expected_amount, timeout_block_height
+    """
+    # Step 1: Validate invoice format
+    valid_prefixes = ("lnbc", "lntb")
+    if not invoice or not any(invoice.startswith(p) for p in valid_prefixes):
+        raise ValueError("Invalid invoice: must be a BOLT11 Lightning invoice starting with 'lnbc' (mainnet) or 'lntb' (testnet)")
+
+    manager = get_manager()
+
+    # Verify wallet exists and is usable
+    wallet_data = manager.storage.load_wallet(wallet_name)
+    if not wallet_data:
+        raise ValueError(f"Wallet '{wallet_name}' not found")
+    if wallet_data.watch_only:
+        raise ValueError("Watch-only wallet cannot sign transactions")
+    if wallet_data.encrypted_mnemonic and manager.storage.is_mnemonic_encrypted(
+        wallet_data.encrypted_mnemonic
+    ):
+        if not passphrase:
+            raise ValueError("Passphrase required to decrypt mnemonic")
+
+    network = wallet_data.network
+
+    # Step 2: Get pair info (pre-flight check before creating swap)
+    client = BoltzClient(network=network)
+    pairs = client.get_submarine_pairs()
+
+    pair = pairs.get("L-BTC", {}).get("BTC")
+    if not pair:
+        raise ValueError("L-BTC/BTC pair not available on Boltz")
+
+    limits = pair["limits"]
+
+    # Step 3: Generate ephemeral keypair
+    refund_privkey, refund_pubkey = generate_keypair() # Next PR will change how this works
+
+    # Step 4: Create submarine swap
+    swap_resp = client.create_submarine_swap(invoice, refund_pubkey)
+
+    expected_amount = swap_resp["expectedAmount"]
+
+    # Validate amount against limits
+    if expected_amount < limits["minimal"]:
+        raise ValueError(
+            f"Amount below minimum: {expected_amount} < {limits['minimal']} sats"
+        )
+    if expected_amount > limits["maximal"]:
+        raise ValueError(
+            f"Amount above maximum: {expected_amount} > {limits['maximal']} sats"
+        )
+
+    # Step 5: Build SwapInfo and persist BEFORE sending
+
+    swap = SwapInfo(
+        swap_id=swap_resp["id"],
+        address=swap_resp["address"],
+        expected_amount=expected_amount,
+        claim_public_key=swap_resp["claimPublicKey"],
+        swap_tree=swap_resp["swapTree"],
+        timeout_block_height=swap_resp["timeoutBlockHeight"],
+        refund_private_key=refund_privkey,
+        refund_public_key=refund_pubkey,
+        invoice=invoice,
+        status="swap.created",
+        network=network,
+        created_at=datetime.now(UTC).isoformat(),
+    )
+    manager.storage.save_swap(swap)
+
+    # Step 6: Send L-BTC to lockup address (send() validates balance internally)
+    lockup_txid = manager.send(
+        wallet_name, swap.address, expected_amount, passphrase=passphrase
+    )
+
+    # Update swap with lockup txid
+    swap.lockup_txid = lockup_txid
+    swap.status = "transaction.mempool"
+    manager.storage.save_swap(swap)
+
+    return {
+        "swap_id": swap.swap_id,
+        "lockup_txid": lockup_txid,
+        "status": swap.status,
+        "expected_amount": expected_amount,
+        "timeout_block_height": swap.timeout_block_height,
+    }
+
+
+def lbtc_swap_lightning_status(swap_id: str) -> dict[str, Any]:
+    """Check the status of a Boltz submarine swap.
+
+    Args:
+        swap_id: Boltz swap ID
+
+    Returns:
+        swap_id, status, lockup_txid, timeout_block_height, network
+    """
+    manager = get_manager()
+    swap = manager.storage.load_swap(swap_id)
+    if not swap:
+        raise ValueError(f"Swap not found: {swap_id}")
+
+    # Try to fetch remote status from Boltz
+    client = BoltzClient(network=swap.network)
+    warning = None
+    try:
+        remote = client.get_swap_status(swap_id)
+        swap.status = remote["status"]
+        manager.storage.save_swap(swap)
+    except Exception as e:
+        warning = f"Could not fetch remote status: {e}"
+
+    result: dict[str, Any] = {
+        "swap_id": swap.swap_id,
+        "status": swap.status,
+        "lockup_txid": swap.lockup_txid,
+        "timeout_block_height": swap.timeout_block_height,
+        "network": swap.network,
+    }
+
+    # If claimed, fetch preimage
+    if swap.status == "transaction.claimed":
+        try:
+            claim = client.get_claim_details(swap_id)
+            result["preimage"] = claim.get("preimage")
+            result["claim_txid"] = claim.get("transactionHash")
+        except Exception as e:
+            result["claim_details_warning"] = f"Could not fetch claim details: {e}"
+
+    # If failed, provide refund info
+    FAILURE_STATUSES = {"invoice.failedToPay", "swap.expired", "transaction.lockupFailed"}
+    if swap.status in FAILURE_STATUSES:
+        result["refund_info"] = (
+            f"Swap failed. Refund available after block {swap.timeout_block_height}. "
+            f"Swap ID: {swap.swap_id}"
+        )
+
+    if warning:
+        result["warning"] = warning
+
+    return result
+
+
 # Tool registry for MCP
 TOOLS = {
     "lw_generate_mnemonic": lw_generate_mnemonic,
@@ -557,4 +720,6 @@ TOOLS = {
     "btc_transactions": btc_transactions,
     "btc_send": btc_send,
     "unified_balance": unified_balance,
+    "lbtc_pay_lightning_invoice": lbtc_pay_lightning_invoice,
+    "lbtc_swap_lightning_status": lbtc_swap_lightning_status,
 }
