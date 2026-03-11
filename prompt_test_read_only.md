@@ -116,7 +116,7 @@ Check the status of my Lightning swap wneeB76Iu5k2
 ### 8. Export Descriptor (Watch-Only)
 
 ```
-Export the CT descriptor for my lastests imported wallet.
+Export the CT descriptor for my latest imported wallet.
 ```
 
 **Expected behavior:**
