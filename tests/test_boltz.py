@@ -7,7 +7,8 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from aqua_mcp.boltz import BoltzClient, SwapInfo, decode_bolt11_amount_sats, generate_keypair, verify_preimage
-
+import io
+import urllib.error
 
 # ---------------------------------------------------------------------------
 # Mock helpers
@@ -181,8 +182,6 @@ class TestBoltzClient:
     @patch("aqua_mcp.boltz.urllib.request.urlopen")
     def test_api_request_http_error_includes_boltz_message(self, mock_urlopen):
         """HTTP errors include Boltz error detail in RuntimeError."""
-        import io
-        import urllib.error
 
         err = urllib.error.HTTPError(
             url="https://api.boltz.exchange/v2/swap/submarine",
@@ -200,9 +199,6 @@ class TestBoltzClient:
     @patch("aqua_mcp.boltz.urllib.request.urlopen")
     def test_api_request_http_error_without_body(self, mock_urlopen):
         """HTTP errors without parseable body still produce a useful message."""
-        import io
-        import urllib.error
-
         err = urllib.error.HTTPError(
             url="https://api.boltz.exchange/v2/swap/submarine",
             code=500,
@@ -219,7 +215,6 @@ class TestBoltzClient:
     @patch("aqua_mcp.boltz.urllib.request.urlopen")
     def test_api_request_timeout_raises(self, mock_urlopen):
         """Network timeout raises RuntimeError with context."""
-        import urllib.error
 
         mock_urlopen.side_effect = urllib.error.URLError("timeout")
         client = BoltzClient(network="mainnet")
