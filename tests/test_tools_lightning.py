@@ -291,62 +291,21 @@ class TestPayLightningInvoice:
         assert stored is not None
         assert stored.lockup_txid is not None
 
-    @patch("aqua_mcp.tools.BoltzClient")
-    def test_pay_lightning_invoice_amount_below_minimum_raises(
-        self, MockBoltz, isolated_manager
-    ):
-        """5.10: Amount below pair minimum raises ValueError."""
-        pairs_with_high_min = {
-            "L-BTC": {
-                "BTC": {
-                    "rate": 1.0,
-                    "fees": {"percentage": 0.1, "minerFees": 19},
-                    "limits": {"maximal": 25000000, "minimal": 100000, "maximalZeroConf": 500000},
-                }
-            }
-        }
-        mock_client = MockBoltz.return_value
-        mock_client.get_submarine_pairs.return_value = pairs_with_high_min
-        # Swap response with expectedAmount below minimum
-        swap_resp = {**MOCK_SWAP_RESPONSE, "expectedAmount": 500}
-        mock_client.create_submarine_swap.return_value = swap_resp
+    def test_pay_lightning_invoice_amount_below_minimum_raises(self, isolated_manager):
+        """Client-side validation rejects invoice below MIN_SWAP_AMOUNT_SATS."""
+        # lnbc10n = 10 nano-BTC = 1 sat → below minimum (100 sats)
+        tiny_invoice = "lnbc10n1ptest0000"
+        isolated_manager.import_mnemonic(TEST_MNEMONIC, "default", "mainnet")
+        with pytest.raises(ValueError, match="below the minimum"):
+            lbtc_pay_lightning_invoice(invoice=tiny_invoice, wallet_name="default")
 
-        with patch.object(
-            isolated_manager, "get_balance", return_value=_mock_balance(100000)
-        ):
-            isolated_manager.import_mnemonic(TEST_MNEMONIC, "default", "mainnet")
-            with pytest.raises(ValueError, match="[Mm]inim"):
-                lbtc_pay_lightning_invoice(
-                    invoice=VALID_INVOICE, wallet_name="default"
-                )
-
-    @patch("aqua_mcp.tools.BoltzClient")
-    def test_pay_lightning_invoice_amount_above_maximum_raises(
-        self, MockBoltz, isolated_manager
-    ):
-        """5.11: Amount above pair maximum raises ValueError."""
-        pairs_with_low_max = {
-            "L-BTC": {
-                "BTC": {
-                    "rate": 1.0,
-                    "fees": {"percentage": 0.1, "minerFees": 19},
-                    "limits": {"maximal": 1000, "minimal": 100, "maximalZeroConf": 500},
-                }
-            }
-        }
-        mock_client = MockBoltz.return_value
-        mock_client.get_submarine_pairs.return_value = pairs_with_low_max
-        swap_resp = {**MOCK_SWAP_RESPONSE, "expectedAmount": 50069}
-        mock_client.create_submarine_swap.return_value = swap_resp
-
-        with patch.object(
-            isolated_manager, "get_balance", return_value=_mock_balance(1000000)
-        ):
-            isolated_manager.import_mnemonic(TEST_MNEMONIC, "default", "mainnet")
-            with pytest.raises(ValueError, match="[Mm]axim"):
-                lbtc_pay_lightning_invoice(
-                    invoice=VALID_INVOICE, wallet_name="default"
-                )
+    def test_pay_lightning_invoice_amount_above_maximum_raises(self, isolated_manager):
+        """Client-side validation rejects invoice above MAX_SWAP_AMOUNT_SATS."""
+        # lnbc300m = 300 milli-BTC = 30,000,000 sats → above 25M maximum
+        huge_invoice = "lnbc300m1ptest0000"
+        isolated_manager.import_mnemonic(TEST_MNEMONIC, "default", "mainnet")
+        with pytest.raises(ValueError, match="exceeds the maximum"):
+            lbtc_pay_lightning_invoice(invoice=huge_invoice, wallet_name="default")
 
     def test_pay_lightning_invoice_wallet_not_found_raises(self):
         """5.12: Non-existent wallet raises ValueError."""

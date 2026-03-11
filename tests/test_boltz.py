@@ -6,7 +6,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from aqua_mcp.boltz import BoltzClient, SwapInfo, generate_keypair, verify_preimage
+from aqua_mcp.boltz import BoltzClient, SwapInfo, decode_bolt11_amount_sats, generate_keypair, verify_preimage
 
 
 # ---------------------------------------------------------------------------
@@ -179,31 +179,52 @@ class TestBoltzClient:
         assert result["transactionHash"] == "bb" * 32
 
     @patch("aqua_mcp.boltz.urllib.request.urlopen")
-    def test_api_request_http_error_raises(self, mock_urlopen):
-        """2.6: HTTP errors propagate as exceptions."""
+    def test_api_request_http_error_includes_boltz_message(self, mock_urlopen):
+        """HTTP errors include Boltz error detail in RuntimeError."""
+        import io
         import urllib.error
 
-        mock_urlopen.side_effect = urllib.error.HTTPError(
+        err = urllib.error.HTTPError(
             url="https://api.boltz.exchange/v2/swap/submarine",
             code=400,
             msg="Bad Request",
             hdrs=None,
-            fp=None,
+            fp=io.BytesIO(json.dumps({"error": "invoice already used"}).encode()),
         )
+        mock_urlopen.side_effect = err
         client = BoltzClient(network="mainnet")
 
-        with pytest.raises(Exception):
+        with pytest.raises(RuntimeError, match="invoice already used"):
+            client.get_submarine_pairs()
+
+    @patch("aqua_mcp.boltz.urllib.request.urlopen")
+    def test_api_request_http_error_without_body(self, mock_urlopen):
+        """HTTP errors without parseable body still produce a useful message."""
+        import io
+        import urllib.error
+
+        err = urllib.error.HTTPError(
+            url="https://api.boltz.exchange/v2/swap/submarine",
+            code=500,
+            msg="Internal Server Error",
+            hdrs=None,
+            fp=io.BytesIO(b"not json"),
+        )
+        mock_urlopen.side_effect = err
+        client = BoltzClient(network="mainnet")
+
+        with pytest.raises(RuntimeError, match="Boltz API error.*500"):
             client.get_submarine_pairs()
 
     @patch("aqua_mcp.boltz.urllib.request.urlopen")
     def test_api_request_timeout_raises(self, mock_urlopen):
-        """2.7: Network timeout propagates as exception."""
+        """Network timeout raises RuntimeError with context."""
         import urllib.error
 
         mock_urlopen.side_effect = urllib.error.URLError("timeout")
         client = BoltzClient(network="mainnet")
 
-        with pytest.raises(Exception):
+        with pytest.raises(RuntimeError, match="Boltz API unreachable"):
             client.get_submarine_pairs()
 
     @patch("aqua_mcp.boltz.urllib.request.urlopen")
@@ -261,3 +282,36 @@ class TestSwapInfo:
         assert swap.lockup_txid is None
         assert swap.preimage is None
         assert swap.claim_txid is None
+
+
+# ===========================================================================
+# BOLT11 invoice amount decoder
+# ===========================================================================
+
+
+class TestDecodeBolt11AmountSats:
+    """Tests for decode_bolt11_amount_sats."""
+
+    @pytest.mark.parametrize("invoice, expected_sats", [
+        ("lnbc500u1ptest0000", 50_000),           # 500 micro-BTC
+        ("lnbc1m1ptest0000", 100_000),             # 1 milli-BTC
+        ("lnbc10m1ptest0000", 1_000_000),          # 10 milli-BTC
+        ("lnbc2500u1ptest0000", 250_000),          # 2500 micro-BTC
+        ("lnbc1500n1ptest0000", 150),              # 1500 nano-BTC
+        ("lnbc21ptest0000", 200_000_000),          # 2 BTC (no multiplier)
+        ("lntb500u1ptest0000", 50_000),            # testnet
+    ])
+    def test_known_amounts(self, invoice, expected_sats):
+        assert decode_bolt11_amount_sats(invoice) == expected_sats
+
+    def test_zero_amount_invoice_returns_none(self):
+        assert decode_bolt11_amount_sats("lnbc1ptest0000") is None
+
+    def test_invalid_prefix_returns_none(self):
+        assert decode_bolt11_amount_sats("xxinvalid") is None
+
+    def test_empty_string_returns_none(self):
+        assert decode_bolt11_amount_sats("") is None
+
+    def test_case_insensitive(self):
+        assert decode_bolt11_amount_sats("LNBC500u1ptest") == 50_000

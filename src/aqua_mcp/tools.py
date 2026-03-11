@@ -14,7 +14,14 @@ logger = logging.getLogger(__name__)
 
 from .assets import resolve_asset_name
 from .bitcoin import BitcoinWalletManager
-from .boltz import BoltzClient, SwapInfo, generate_keypair
+from .boltz import (
+    BoltzClient,
+    MAX_SWAP_AMOUNT_SATS,
+    MIN_SWAP_AMOUNT_SATS,
+    SwapInfo,
+    decode_bolt11_amount_sats,
+    generate_keypair,
+)
 from .wallet import WalletManager
 
 
@@ -580,7 +587,19 @@ def lbtc_pay_lightning_invoice(
 
     network = wallet_data.network
 
-    # Step 2: Get pair info (pre-flight check before creating swap)
+    # Step 2: Pre-flight amount check (avoids creating an orphan swap on Boltz)
+    invoice_amount = decode_bolt11_amount_sats(invoice)
+    if invoice_amount is not None:
+        if invoice_amount < MIN_SWAP_AMOUNT_SATS:
+            raise ValueError(
+                f"Invoice amount {invoice_amount} sats is below the minimum ({MIN_SWAP_AMOUNT_SATS} sats)"
+            )
+        if invoice_amount > MAX_SWAP_AMOUNT_SATS:
+            raise ValueError(
+                f"Invoice amount {invoice_amount} sats exceeds the maximum ({MAX_SWAP_AMOUNT_SATS} sats)"
+            )
+
+    # Step 3: Verify the L-BTC/BTC pair is available on Boltz
     client = BoltzClient(network=network)
     pairs = client.get_submarine_pairs()
 
@@ -588,27 +607,15 @@ def lbtc_pay_lightning_invoice(
     if not pair:
         raise ValueError("L-BTC/BTC pair not available on Boltz")
 
-    limits = pair["limits"]
+    # Step 4: Generate ephemeral keypair
+    refund_privkey, refund_pubkey = generate_keypair()  # Next PR will change how this works
 
-    # Step 3: Generate ephemeral keypair
-    refund_privkey, refund_pubkey = generate_keypair() # Next PR will change how this works
-
-    # Step 4: Create submarine swap
+    # Step 5: Create submarine swap
     swap_resp = client.create_submarine_swap(invoice, refund_pubkey)
 
     expected_amount = swap_resp["expectedAmount"]
 
-    # Validate amount against limits
-    if expected_amount < limits["minimal"]:
-        raise ValueError(
-            f"Amount below minimum: {expected_amount} < {limits['minimal']} sats"
-        )
-    if expected_amount > limits["maximal"]:
-        raise ValueError(
-            f"Amount above maximum: {expected_amount} > {limits['maximal']} sats"
-        )
-
-    # Step 5: Build SwapInfo and persist BEFORE sending
+    # Step 6: Build SwapInfo and persist BEFORE sending
 
     swap = SwapInfo(
         swap_id=swap_resp["id"],
@@ -626,7 +633,7 @@ def lbtc_pay_lightning_invoice(
     )
     manager.storage.save_swap(swap)
 
-    # Step 6: Send L-BTC to lockup address (send() validates balance internally)
+    # Step 7: Send L-BTC to lockup address (send() validates balance internally)
     lockup_txid = manager.send(
         wallet_name, swap.address, expected_amount, passphrase=passphrase
     )

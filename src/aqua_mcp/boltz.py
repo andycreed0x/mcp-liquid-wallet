@@ -2,6 +2,7 @@
 
 import hashlib
 import json
+import re
 import secrets
 import urllib.error
 import urllib.request
@@ -13,6 +14,19 @@ import coincurve
 BOLTZ_API = {
     "mainnet": "https://api.boltz.exchange",
     "testnet": "https://api.testnet.boltz.exchange",
+}
+
+# Client-side swap amount limits (satoshis)
+MIN_SWAP_AMOUNT_SATS = 100
+MAX_SWAP_AMOUNT_SATS = 25_000_000
+
+# BOLT11 amount multiplier → satoshis factor
+_BOLT11_MULTIPLIERS: dict[str, float] = {
+    "m": 100_000,        # milli-BTC
+    "u": 100,            # micro-BTC
+    "n": 0.1,            # nano-BTC
+    "p": 0.0001,         # pico-BTC
+    "":  100_000_000,    # BTC (no suffix)
 }
 
 
@@ -60,8 +74,25 @@ class BoltzClient:
                 "User-Agent": "aqua-mcp",
             },
         )
-        with urllib.request.urlopen(req, timeout=30) as resp:
-            return json.loads(resp.read().decode())
+        try:
+            with urllib.request.urlopen(req, timeout=30) as resp:
+                return json.loads(resp.read().decode())
+        except urllib.error.HTTPError as e:
+            # Try to extract Boltz error message from response body
+            detail = ""
+            try:
+                err_body = json.loads(e.read().decode())
+                detail = err_body.get("error", err_body.get("message", ""))
+            except Exception:
+                pass
+            msg = f"Boltz API error ({e.code} {method} {path})"
+            if detail:
+                msg += f": {detail}"
+            raise RuntimeError(msg) from e
+        except urllib.error.URLError as e:
+            raise RuntimeError(
+                f"Boltz API unreachable ({method} {path}): {e.reason}"
+            ) from e
 
     def get_submarine_pairs(self) -> dict:
         """GET /v2/swap/submarine - fetch available pairs, fees, limits."""
@@ -100,3 +131,33 @@ def verify_preimage(preimage_hex: str, expected_hash_hex: str) -> bool:
     preimage = bytes.fromhex(preimage_hex)
     computed = hashlib.sha256(preimage).hexdigest()
     return computed == expected_hash_hex.lower()
+
+
+def decode_bolt11_amount_sats(invoice: str) -> int | None:
+    """Extract the amount in satoshis from a BOLT11 invoice.
+
+    Returns None for zero-amount invoices or if the amount cannot be parsed.
+    """
+    invoice = invoice.lower().strip()
+    # Strip Lightning prefix to get the amount portion of the HRP
+    for prefix in ("lnbcrt", "lnbc", "lntb", "lntbs"):
+        if invoice.startswith(prefix):
+            hrp_rest = invoice[len(prefix):]
+            break
+    else:
+        return None
+
+    if not hrp_rest:
+        return None
+
+    # Match amount (digits) + optional multiplier + '1' separator.
+    # Zero-amount invoices (e.g. "lnbc1p...") won't match because
+    # the regex requires digits followed by separator '1'.
+    match = re.match(r"^(\d+)([munp]?)1", hrp_rest)
+    if not match:
+        return None
+
+    amount = int(match.group(1))
+    multiplier = match.group(2)
+    sats = amount * _BOLT11_MULTIPLIERS[multiplier]
+    return int(sats)
