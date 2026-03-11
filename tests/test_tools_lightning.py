@@ -131,7 +131,7 @@ class TestPayLightningInvoice:
     def test_pay_lightning_invoice_happy_path(
         self, mock_keypair, MockBoltz, isolated_manager
     ):
-        """5.1: Full happy path - validate, create swap, send L-BTC, persist."""
+        """Full happy path - validate, create swap, send L-BTC, persist."""
         mock_client = MockBoltz.return_value
         mock_client.get_submarine_pairs.return_value = MOCK_SUBMARINE_PAIRS
         mock_client.create_submarine_swap.return_value = MOCK_SWAP_RESPONSE
@@ -153,12 +153,12 @@ class TestPayLightningInvoice:
         assert "expected_amount" in result
 
     def test_pay_lightning_invoice_invalid_invoice_format(self):
-        """5.2: Invoice not starting with lnbc is rejected."""
+        """Invoice not starting with lnbc is rejected."""
         with pytest.raises(ValueError, match="invoice"):
             lbtc_pay_lightning_invoice(invoice="invalid_invoice_here")
 
     def test_pay_lightning_invoice_empty_invoice_raises(self):
-        """5.3: Empty invoice is rejected."""
+        """Empty invoice is rejected."""
         with pytest.raises(ValueError):
             lbtc_pay_lightning_invoice(invoice="")
 
@@ -167,7 +167,7 @@ class TestPayLightningInvoice:
     def test_pay_lightning_invoice_insufficient_balance(
         self, mock_keypair, MockBoltz, isolated_manager
     ):
-        """5.4: Insufficient balance during send raises ValueError."""
+        """Insufficient balance during send raises ValueError."""
         mock_client = MockBoltz.return_value
         mock_client.get_submarine_pairs.return_value = MOCK_SUBMARINE_PAIRS
         mock_client.create_submarine_swap.return_value = MOCK_SWAP_RESPONSE
@@ -183,7 +183,7 @@ class TestPayLightningInvoice:
                 )
 
     def test_pay_lightning_invoice_watch_only_wallet_raises(self, isolated_manager):
-        """5.5: Watch-only wallet cannot pay."""
+        """Watch-only wallet cannot pay."""
         # Import as watch-only (descriptor only, no mnemonic)
         isolated_manager.import_descriptor(
             "ct(slip77(ab),elwpkh(xpub))", "watchonly", "mainnet"
@@ -194,7 +194,7 @@ class TestPayLightningInvoice:
             )
 
     def test_pay_lightning_invoice_passphrase_required(self, isolated_manager):
-        """5.6: Encrypted wallet without passphrase raises error."""
+        """Encrypted wallet without passphrase raises error."""
         isolated_manager.import_mnemonic(
             TEST_MNEMONIC, "encrypted", "mainnet", passphrase="Secret-pass-123"
         )
@@ -208,7 +208,7 @@ class TestPayLightningInvoice:
     def test_pay_lightning_invoice_boltz_api_error(
         self, mock_keypair, MockBoltz, isolated_manager
     ):
-        """5.7: Boltz API error propagates with descriptive message."""
+        """Boltz API error propagates with descriptive message."""
         mock_client = MockBoltz.return_value
         mock_client.get_submarine_pairs.return_value = MOCK_SUBMARINE_PAIRS
         mock_client.create_submarine_swap.side_effect = RuntimeError(
@@ -229,7 +229,7 @@ class TestPayLightningInvoice:
     def test_pay_lightning_invoice_persists_swap_before_sending(
         self, mock_keypair, MockBoltz, isolated_manager
     ):
-        """5.8: Swap is saved to disk BEFORE sending L-BTC (for recovery)."""
+        """Swap is saved to disk BEFORE sending L-BTC (for recovery)."""
         mock_client = MockBoltz.return_value
         mock_client.get_submarine_pairs.return_value = MOCK_SUBMARINE_PAIRS
         mock_client.create_submarine_swap.return_value = MOCK_SWAP_RESPONSE
@@ -271,7 +271,7 @@ class TestPayLightningInvoice:
     def test_pay_lightning_invoice_updates_swap_with_lockup_txid(
         self, mock_keypair, MockBoltz, isolated_manager
     ):
-        """5.9: After sending L-BTC, the persisted swap has lockup_txid set."""
+        """After sending L-BTC, the persisted swap has lockup_txid set."""
         mock_client = MockBoltz.return_value
         mock_client.get_submarine_pairs.return_value = MOCK_SUBMARINE_PAIRS
         mock_client.create_submarine_swap.return_value = MOCK_SWAP_RESPONSE
@@ -308,7 +308,7 @@ class TestPayLightningInvoice:
             lbtc_pay_lightning_invoice(invoice=huge_invoice, wallet_name="default")
 
     def test_pay_lightning_invoice_wallet_not_found_raises(self):
-        """5.12: Non-existent wallet raises ValueError."""
+        """Non-existent wallet raises ValueError."""
         with pytest.raises(ValueError, match="not found|[Nn]ot found"):
             lbtc_pay_lightning_invoice(
                 invoice=VALID_INVOICE, wallet_name="nonexistent"
@@ -327,7 +327,7 @@ class TestSwapLightningStatus:
     def test_swap_lightning_status_returns_current_status(
         self, MockBoltz, isolated_manager
     ):
-        """6.1: Returns combined local + remote status."""
+        """Returns combined local + remote status."""
         _save_test_swap(isolated_manager.storage)
         mock_client = MockBoltz.return_value
         mock_client.get_swap_status.return_value = {"status": "transaction.mempool"}
@@ -343,7 +343,7 @@ class TestSwapLightningStatus:
     def test_swap_lightning_status_claimed_fetches_preimage(
         self, MockBoltz, isolated_manager
     ):
-        """6.2: When claimed, fetches claim details including preimage."""
+        """When claimed, fetches claim details including preimage."""
         _save_test_swap(isolated_manager.storage)
         mock_client = MockBoltz.return_value
         mock_client.get_swap_status.return_value = {"status": "transaction.claimed"}
@@ -373,7 +373,7 @@ class TestSwapLightningStatus:
     def test_swap_lightning_status_failure_returns_refund_info(
         self, MockBoltz, isolated_manager
     ):
-        """6.3: Failed swap returns refund info."""
+        """Failed swap returns refund info."""
         _save_test_swap(isolated_manager.storage)
         mock_client = MockBoltz.return_value
         mock_client.get_swap_status.return_value = {"status": "invoice.failedToPay"}
@@ -387,7 +387,7 @@ class TestSwapLightningStatus:
         assert "2500000" in str(refund) or "timeout" in str(refund).lower()
 
     def test_swap_lightning_status_not_found_raises(self):
-        """6.4: Unknown swap_id raises ValueError."""
+        """Unknown swap_id raises ValueError."""
         with pytest.raises(ValueError, match="not found|unknown"):
             lbtc_swap_lightning_status(swap_id="nonexistent_swap_id")
 
@@ -395,7 +395,7 @@ class TestSwapLightningStatus:
     def test_swap_lightning_status_updates_stored_swap(
         self, MockBoltz, isolated_manager
     ):
-        """6.5: After querying, stored swap is updated with new status."""
+        """After querying, stored swap is updated with new status."""
         _save_test_swap(isolated_manager.storage, status="swap.created")
         mock_client = MockBoltz.return_value
         mock_client.get_swap_status.return_value = {"status": "transaction.mempool"}
@@ -409,7 +409,7 @@ class TestSwapLightningStatus:
     def test_swap_lightning_status_boltz_api_error_returns_local_data(
         self, MockBoltz, isolated_manager
     ):
-        """6.6: If Boltz API fails, return local data with warning."""
+        """If Boltz API fails, return local data with warning."""
         _save_test_swap(isolated_manager.storage, status="transaction.mempool")
         mock_client = MockBoltz.return_value
         mock_client.get_swap_status.side_effect = RuntimeError("API unreachable")
@@ -430,11 +430,11 @@ class TestLightningToolRegistry:
     """Tests for Lightning tool registration in TOOLS dict."""
 
     def test_lightning_tools_registered_in_tools_dict(self):
-        """7.1: Both new tools are in TOOLS."""
+        """Both new tools are in TOOLS."""
         assert "lbtc_pay_lightning_invoice" in TOOLS
         assert "lbtc_swap_lightning_status" in TOOLS
 
     def test_lightning_tools_are_callable(self):
-        """7.2: Both tools are callable."""
+        """Both tools are callable."""
         assert callable(TOOLS["lbtc_pay_lightning_invoice"])
         assert callable(TOOLS["lbtc_swap_lightning_status"])

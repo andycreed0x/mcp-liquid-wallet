@@ -175,11 +175,11 @@ class TestSwapStorage:
         return SwapInfo(**defaults)
 
     def test_swaps_dir_created_on_init(self, temp_storage):
-        """4.1: Storage init creates swaps/ directory."""
+        """Storage init creates swaps/ directory."""
         assert temp_storage.swaps_dir.exists()
 
     def test_save_and_load_swap(self, temp_storage):
-        """4.2: SwapInfo saved can be loaded back correctly."""
+        """SwapInfo saved can be loaded back correctly."""
         swap = self._make_swap()
         temp_storage.save_swap(swap)
 
@@ -192,16 +192,16 @@ class TestSwapStorage:
         assert loaded.refund_private_key == swap.refund_private_key
 
     def test_load_swap_not_found_returns_none(self, temp_storage):
-        """4.3: load_swap with nonexistent ID returns None."""
+        """load_swap with nonexistent ID returns None."""
         result = temp_storage.load_swap("nonexistent")
         assert result is None
 
     def test_list_swaps_empty(self, temp_storage):
-        """4.4: list_swaps returns empty list when no swaps."""
+        """list_swaps returns empty list when no swaps."""
         assert temp_storage.list_swaps() == []
 
     def test_list_swaps_returns_ids(self, temp_storage):
-        """4.5: list_swaps returns all saved swap IDs."""
+        """list_swaps returns all saved swap IDs."""
         swap1 = self._make_swap(swap_id="swap_aaa")
         swap2 = self._make_swap(swap_id="swap_bbb")
         temp_storage.save_swap(swap1)
@@ -211,7 +211,7 @@ class TestSwapStorage:
         assert set(ids) == {"swap_aaa", "swap_bbb"}
 
     def test_save_swap_updates_existing(self, temp_storage):
-        """4.6: Saving swap with same ID overwrites previous data."""
+        """Saving swap with same ID overwrites previous data."""
         swap = self._make_swap(status="swap.created")
         temp_storage.save_swap(swap)
 
@@ -225,7 +225,7 @@ class TestSwapStorage:
 
     @pytest.mark.skipif(sys.platform == "win32", reason="Unix mode bits")
     def test_swap_file_permissions(self, temp_storage):
-        """4.7: Swap files are created with 0o600 permissions."""
+        """Swap files are created with 0o600 permissions."""
         swap = self._make_swap()
         temp_storage.save_swap(swap)
 

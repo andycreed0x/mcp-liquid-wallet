@@ -61,7 +61,7 @@ class TestGenerateKeypair:
     """Tests for generate_keypair() - uses coincurve real."""
 
     def test_generate_keypair_returns_hex_strings(self):
-        """1.1: Returns (privkey_hex, pubkey_hex) with correct sizes."""
+        """Returns (privkey_hex, pubkey_hex) with correct sizes."""
         privkey, pubkey = generate_keypair()
 
         # privkey: 32 bytes = 64 hex chars
@@ -74,7 +74,7 @@ class TestGenerateKeypair:
         assert pubkey[:2] in ("02", "03")
 
     def test_generate_keypair_unique_per_call(self):
-        """1.2: Two calls produce different keypairs."""
+        """Two calls produce different keypairs."""
         priv1, pub1 = generate_keypair()
         priv2, pub2 = generate_keypair()
         assert priv1 != priv2
@@ -85,19 +85,19 @@ class TestVerifyPreimage:
     """Tests for verify_preimage() - uses hashlib real."""
 
     def test_verify_preimage_valid(self):
-        """1.3: Returns True when SHA256(preimage) == expected_hash."""
+        """Returns True when SHA256(preimage) == expected_hash."""
         preimage = "aa" * 32
         expected = hashlib.sha256(bytes.fromhex(preimage)).hexdigest()
         assert verify_preimage(preimage, expected) is True
 
     def test_verify_preimage_invalid(self):
-        """1.4: Returns False when hash doesn't match."""
+        """Returns False when hash doesn't match."""
         preimage = "aa" * 32
         wrong_hash = "bb" * 32
         assert verify_preimage(preimage, wrong_hash) is False
 
     def test_verify_preimage_invalid_hex_raises(self):
-        """1.5: Raises ValueError for invalid hex input."""
+        """Raises ValueError for invalid hex input."""
         with pytest.raises(ValueError):
             verify_preimage("xyz_not_hex", "aa" * 32)
 
@@ -112,7 +112,7 @@ class TestBoltzClient:
 
     @patch("aqua_mcp.boltz.urllib.request.urlopen")
     def test_get_submarine_pairs_returns_lbtc_btc(self, mock_urlopen):
-        """2.1: GET /v2/swap/submarine returns L-BTC/BTC pair info."""
+        """GET /v2/swap/submarine returns L-BTC/BTC pair info."""
         mock_urlopen.return_value = _mock_response(MOCK_SUBMARINE_PAIRS)
         client = BoltzClient(network="mainnet")
         result = client.get_submarine_pairs()
@@ -126,7 +126,7 @@ class TestBoltzClient:
 
     @patch("aqua_mcp.boltz.urllib.request.urlopen")
     def test_create_submarine_swap_sends_correct_body(self, mock_urlopen):
-        """2.2: POST body contains invoice, from, to, refundPublicKey."""
+        """POST body contains invoice, from, to, refundPublicKey."""
         mock_urlopen.return_value = _mock_response(MOCK_SWAP_RESPONSE)
         client = BoltzClient(network="mainnet")
 
@@ -146,7 +146,7 @@ class TestBoltzClient:
 
     @patch("aqua_mcp.boltz.urllib.request.urlopen")
     def test_create_submarine_swap_returns_swap_data(self, mock_urlopen):
-        """2.3: Response is parsed into dict with expected fields."""
+        """Response is parsed into dict with expected fields."""
         mock_urlopen.return_value = _mock_response(MOCK_SWAP_RESPONSE)
         client = BoltzClient(network="mainnet")
 
@@ -161,7 +161,7 @@ class TestBoltzClient:
 
     @patch("aqua_mcp.boltz.urllib.request.urlopen")
     def test_get_swap_status_returns_status(self, mock_urlopen):
-        """2.4: get_swap_status returns current swap status."""
+        """get_swap_status returns current swap status."""
         mock_urlopen.return_value = _mock_response({"status": "transaction.mempool"})
         client = BoltzClient(network="mainnet")
 
@@ -170,7 +170,7 @@ class TestBoltzClient:
 
     @patch("aqua_mcp.boltz.urllib.request.urlopen")
     def test_get_claim_details_returns_preimage(self, mock_urlopen):
-        """2.5: get_claim_details returns preimage and transactionHash."""
+        """get_claim_details returns preimage and transactionHash."""
         mock_urlopen.return_value = _mock_response(MOCK_CLAIM_DETAILS)
         client = BoltzClient(network="mainnet")
 
@@ -229,7 +229,7 @@ class TestBoltzClient:
 
     @patch("aqua_mcp.boltz.urllib.request.urlopen")
     def test_api_request_invalid_json_raises(self, mock_urlopen):
-        """2.8: Non-JSON response raises exception."""
+        """Non-JSON response raises exception."""
         mock_urlopen.return_value = _mock_response(b"not json at all")
         client = BoltzClient(network="mainnet")
 
@@ -265,7 +265,7 @@ class TestSwapInfo:
         return SwapInfo(**defaults)
 
     def test_swap_info_to_dict_roundtrip(self):
-        """3.1: SwapInfo serializes to dict and reconstructs without data loss."""
+        """SwapInfo serializes to dict and reconstructs without data loss."""
         original = self._make_swap(
             lockup_txid="dd" * 32,
             preimage="ee" * 32,
@@ -277,7 +277,7 @@ class TestSwapInfo:
         assert reconstructed == original
 
     def test_swap_info_optional_fields_default_none(self):
-        """3.2: Optional fields default to None."""
+        """Optional fields default to None."""
         swap = self._make_swap()
         assert swap.lockup_txid is None
         assert swap.preimage is None
