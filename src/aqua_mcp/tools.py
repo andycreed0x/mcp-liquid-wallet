@@ -12,22 +12,8 @@ logger = logging.getLogger(__name__)
 
 logger = logging.getLogger(__name__)
 
-from .ankara import (
-    AnkaraClient,
-    AnkaraSwapInfo,
-    MAX_SWAP_AMOUNT_SATS as ANKARA_MAX_SWAP_AMOUNT_SATS,
-    MIN_SWAP_AMOUNT_SATS as ANKARA_MIN_SWAP_AMOUNT_SATS,
-)
 from .assets import resolve_asset_name
 from .bitcoin import BitcoinWalletManager
-from .boltz import (
-    BoltzClient,
-    MAX_SWAP_AMOUNT_SATS,
-    MIN_SWAP_AMOUNT_SATS,
-    SwapInfo,
-    decode_bolt11_amount_sats,
-    generate_keypair,
-)
 from .wallet import WalletManager
 
 
@@ -45,6 +31,7 @@ EXPLORER_URLS = {
 # Global wallet manager instance
 _manager: WalletManager | None = None
 _btc_manager: BitcoinWalletManager | None = None
+_lightning_manager: "LightningManager | None" = None
 
 
 def get_manager() -> WalletManager:
@@ -61,6 +48,18 @@ def get_btc_manager() -> BitcoinWalletManager:
     if _btc_manager is None:
         _btc_manager = BitcoinWalletManager(storage=get_manager().storage)
     return _btc_manager
+
+
+def get_lightning_manager() -> "LightningManager":
+    """Get or create Lightning manager (shares storage and wallet manager)."""
+    global _lightning_manager
+    if _lightning_manager is None:
+        from .lightning import LightningManager
+        _lightning_manager = LightningManager(
+            storage=get_manager().storage,
+            wallet_manager=get_manager(),
+        )
+    return _lightning_manager
 
 
 # Tool implementations
@@ -553,246 +552,38 @@ def lw_list_wallets() -> dict[str, Any]:
 
 
 # ---------------------------------------------------------------------------
-# Lightning (Boltz submarine swap) tools
+# Lightning tools (unified interface)
 # ---------------------------------------------------------------------------
 
 
-def lbtc_pay_lightning_invoice(
-    invoice: str,
-    wallet_name: str = "default",
-    passphrase: str | None = None,
-) -> dict[str, Any]:
-    """Pay a Lightning invoice using L-BTC via Boltz submarine swap.
-
-    Args:
-        invoice: BOLT11 Lightning invoice (lnbc...)
-        wallet_name: Liquid wallet to pay from. Default: "default"
-        passphrase: Passphrase to decrypt mnemonic (if encrypted)
-
-    Returns:
-        swap_id, lockup_txid, status, expected_amount, timeout_block_height
-    """
-    # Step 1: Validate invoice format
-    valid_prefixes = ("lnbc", "lntb")
-    if not invoice or not any(invoice.startswith(p) for p in valid_prefixes):
-        raise ValueError("Invalid invoice: must be a BOLT11 Lightning invoice starting with 'lnbc' (mainnet) or 'lntb' (testnet)")
-
-    manager = get_manager()
-
-    # Verify wallet exists and is usable
-    wallet_data = manager.storage.load_wallet(wallet_name)
-    if not wallet_data:
-        raise ValueError(f"Wallet '{wallet_name}' not found")
-    if wallet_data.watch_only:
-        raise ValueError("Watch-only wallet cannot sign transactions")
-    if wallet_data.encrypted_mnemonic and manager.storage.is_mnemonic_encrypted(
-        wallet_data.encrypted_mnemonic
-    ):
-        if not passphrase:
-            raise ValueError("Passphrase required to decrypt mnemonic")
-
-    network = wallet_data.network
-
-    # Step 2: Pre-flight amount check (avoids creating an orphan swap on Boltz)
-    invoice_amount = decode_bolt11_amount_sats(invoice)
-    if invoice_amount is not None:
-        if invoice_amount < MIN_SWAP_AMOUNT_SATS:
-            raise ValueError(
-                f"Invoice amount {invoice_amount} sats is below the minimum ({MIN_SWAP_AMOUNT_SATS} sats)"
-            )
-        if invoice_amount > MAX_SWAP_AMOUNT_SATS:
-            raise ValueError(
-                f"Invoice amount {invoice_amount} sats exceeds the maximum ({MAX_SWAP_AMOUNT_SATS} sats)"
-            )
-
-    # Step 3: Verify the L-BTC/BTC pair is available on Boltz
-    client = BoltzClient(network=network)
-    pairs = client.get_submarine_pairs()
-
-    pair = pairs.get("L-BTC", {}).get("BTC")
-    if not pair:
-        raise ValueError("L-BTC/BTC pair not available on Boltz")
-
-    # Step 4: Generate ephemeral keypair
-    refund_privkey, refund_pubkey = generate_keypair()  # Next PR will change how this works
-
-    # Step 5: Create submarine swap
-    swap_resp = client.create_submarine_swap(invoice, refund_pubkey)
-
-    expected_amount = swap_resp["expectedAmount"]
-
-    # Step 6: Build SwapInfo and persist BEFORE sending
-
-    swap = SwapInfo(
-        swap_id=swap_resp["id"],
-        address=swap_resp["address"],
-        expected_amount=expected_amount,
-        claim_public_key=swap_resp["claimPublicKey"],
-        swap_tree=swap_resp["swapTree"],
-        timeout_block_height=swap_resp["timeoutBlockHeight"],
-        refund_private_key=refund_privkey,
-        refund_public_key=refund_pubkey,
-        invoice=invoice,
-        status="swap.created",
-        network=network,
-        created_at=datetime.now(UTC).isoformat(),
-    )
-    manager.storage.save_swap(swap)
-
-    # Step 7: Send L-BTC to lockup address (send() validates balance internally)
-    lockup_txid = manager.send(
-        wallet_name, swap.address, expected_amount, passphrase=passphrase
-    )
-
-    # Update swap with lockup txid
-    swap.lockup_txid = lockup_txid
-    swap.status = "transaction.mempool"
-    manager.storage.save_swap(swap)
-
-    return {
-        "swap_id": swap.swap_id,
-        "lockup_txid": lockup_txid,
-        "status": swap.status,
-        "expected_amount": expected_amount,
-        "timeout_block_height": swap.timeout_block_height,
-    }
-
-
-def lbtc_swap_lightning_status(swap_id: str) -> dict[str, Any]:
-    """Check the status of a Boltz submarine swap.
-
-    Args:
-        swap_id: Boltz swap ID
-
-    Returns:
-        swap_id, status, lockup_txid, timeout_block_height, network
-    """
-    manager = get_manager()
-    swap = manager.storage.load_swap(swap_id)
-    if not swap:
-        raise ValueError(f"Swap not found: {swap_id}")
-
-    # Try to fetch remote status from Boltz
-    client = BoltzClient(network=swap.network)
-    warning = None
-    try:
-        remote = client.get_swap_status(swap_id)
-        swap.status = remote["status"]
-        manager.storage.save_swap(swap)
-    except Exception as e:
-        warning = f"Could not fetch remote status: {e}"
-
-    result: dict[str, Any] = {
-        "swap_id": swap.swap_id,
-        "status": swap.status,
-        "lockup_txid": swap.lockup_txid,
-        "timeout_block_height": swap.timeout_block_height,
-        "network": swap.network,
-    }
-
-    # If claimed, fetch preimage
-    if swap.status == "transaction.claimed":
-        try:
-            claim = client.get_claim_details(swap_id)
-            result["preimage"] = claim.get("preimage")
-            result["claim_txid"] = claim.get("transactionHash")
-        except Exception as e:
-            result["claim_details_warning"] = f"Could not fetch claim details: {e}"
-
-    # If failed, provide refund info
-    FAILURE_STATUSES = {"invoice.failedToPay", "swap.expired", "transaction.lockupFailed"}
-    if swap.status in FAILURE_STATUSES:
-        result["refund_info"] = (
-            f"Swap failed. Refund available after block {swap.timeout_block_height}. "
-            f"Swap ID: {swap.swap_id}"
-        )
-
-    if warning:
-        result["warning"] = warning
-
-    return result
-
-
-# Ankara Lightning Receive tools
-# ---------------------------------------------------------------------------
-
-
-def ankara_ln_receive(
+def lightning_receive(
     amount: int,
     wallet_name: str = "default",
     passphrase: str | None = None,
 ) -> dict[str, Any]:
-    """Generate a Lightning invoice to receive funds via Ankara backend.
+    """Generate a Lightning invoice to receive L-BTC into a Liquid wallet.
 
-    User pays this invoice externally; L-BTC arrives in their Liquid wallet.
+    User pays this invoice externally; L-BTC arrives within 1-2 minutes.
 
     Args:
         amount: Amount in satoshis (100 – 25,000,000)
-        wallet_name: Liquid wallet to receive funds. Default: "default"
-        passphrase: Passphrase to decrypt mnemonic (if encrypted) - optional, only validated
+        wallet_name: Liquid wallet to receive into. Default: "default"
+        passphrase: Passphrase to decrypt mnemonic (if encrypted)
 
     Returns:
-        swap_id, invoice, amount, address, wallet_name, message
+        swap_id, invoice, amount, wallet_name, message
     """
-    # Validate amount
-    if amount < ANKARA_MIN_SWAP_AMOUNT_SATS:
-        raise ValueError(
-            f"Amount {amount} sats is below minimum ({ANKARA_MIN_SWAP_AMOUNT_SATS} sats)"
-        )
-    if amount > ANKARA_MAX_SWAP_AMOUNT_SATS:
-        raise ValueError(
-            f"Amount {amount} sats exceeds maximum ({ANKARA_MAX_SWAP_AMOUNT_SATS} sats)"
-        )
-
-    manager = get_manager()
-
-    # Load and validate wallet
-    wallet_data = manager.storage.load_wallet(wallet_name)
-    if not wallet_data:
-        raise ValueError(f"Wallet '{wallet_name}' not found")
-    if wallet_data.watch_only:
-        raise ValueError("Watch-only wallet cannot receive funds directly (no signing required, but cannot verify)")
-
-    # If wallet has encrypted mnemonic, validate passphrase was provided
-    if wallet_data.encrypted_mnemonic and manager.storage.is_mnemonic_encrypted(
-        wallet_data.encrypted_mnemonic
-    ):
-        if not passphrase:
-            raise ValueError("Passphrase required to decrypt mnemonic")
-
-    # Generate fresh Liquid address
-    addr = manager.get_address(wallet_name)
-    address = addr.address
-
-    # Call Ankara API to create swap
-    client = AnkaraClient()
-    try:
-        swap_resp = client.create_swap(amount, address)
-    except Exception as e:
-        raise RuntimeError(f"Failed to create Ankara swap: {e}") from e
-
-    # Build and persist AnkaraSwapInfo
-    swap = AnkaraSwapInfo(
-        swap_id=swap_resp["swap_id"],
-        boltz_swap_id=swap_resp.get("boltz_swap_id", ""),
-        invoice=swap_resp["invoice"],
-        address=address,
-        amount=amount,
-        wallet_name=wallet_name,
-        status="pending",
-        created_at=datetime.now(UTC).isoformat(),
-    )
-    manager.storage.save_ankara_swap(swap)
+    manager = get_lightning_manager()
+    swap = manager.create_receive_invoice(amount, wallet_name, passphrase)
 
     # Count wallets to inform user which one receives
-    all_wallets = manager.storage.list_wallets()
+    all_wallets = get_manager().storage.list_wallets()
     wallet_note = f" in wallet '{wallet_name}'" if len(all_wallets) > 1 else ""
 
     return {
         "swap_id": swap.swap_id,
         "invoice": swap.invoice,
         "amount": amount,
-        "address": address,
         "wallet_name": wallet_name,
         "message": (
             f"Pay this Lightning invoice to receive {amount} satoshis of L-BTC{wallet_note}. "
@@ -802,82 +593,45 @@ def ankara_ln_receive(
     }
 
 
-def ankara_ln_claim(swap_id: str) -> dict[str, Any]:
-    """Claim a settled Ankara Lightning swap.
+def lightning_send(
+    invoice: str,
+    wallet_name: str = "default",
+    passphrase: str | None = None,
+) -> dict[str, Any]:
+    """Pay a Lightning invoice using L-BTC from a Liquid wallet.
+
+    Uses a submarine swap via Boltz. Fees: ~0.1% + miner fees.
 
     Args:
-        swap_id: Ankara swap UUID from ankara_ln_receive
+        invoice: BOLT11 Lightning invoice (lnbc... or lntb...)
+        wallet_name: Liquid wallet to pay from. Default: "default"
+        passphrase: Passphrase to decrypt mnemonic (if encrypted)
 
     Returns:
-        swap_id, status, message
+        swap_id, lockup_txid, status, amount
     """
-    manager = get_manager()
-
-    # Load swap
-    swap = manager.storage.load_ankara_swap(swap_id)
-    if not swap:
-        raise ValueError(f"Ankara swap not found: {swap_id}")
-
-    # Call Ankara API to claim
-    client = AnkaraClient()
-    try:
-        client.claim_swap(swap_id)
-    except Exception as e:
-        raise RuntimeError(f"Failed to claim Ankara swap: {e}") from e
-
-    # Update status
-    swap.status = "claimed"
-    manager.storage.save_ankara_swap(swap)
+    manager = get_lightning_manager()
+    swap = manager.pay_invoice(invoice, wallet_name, passphrase)
 
     return {
         "swap_id": swap.swap_id,
+        "lockup_txid": swap.lockup_txid,
         "status": swap.status,
-        "message": f"Swap {swap_id} claimed successfully",
+        "amount": swap.amount,
     }
 
 
-def ankara_ln_verify(swap_id: str) -> dict[str, Any]:
-    """Verify the settlement status of an Ankara Lightning swap.
+def lightning_transaction_status(swap_id: str) -> dict[str, Any]:
+    """Check the status of a Lightning receive swap and auto-claim when settled.
 
     Args:
-        swap_id: Ankara swap UUID to check
+        swap_id: Swap ID from lightning_receive
 
     Returns:
-        swap_id, settled, preimage (if settled), wallet_name (if known)
+        swap_id, status, amount, wallet_name, invoice, and optional preimage, warning, claim_warning
     """
-    manager = get_manager()
-
-    # Try to load local swap data for context
-    swap = manager.storage.load_ankara_swap(swap_id)
-    wallet_name = swap.wallet_name if swap else None
-
-    # Call Ankara API to verify
-    client = AnkaraClient()
-    try:
-        verify_resp = client.verify_swap(swap_id)
-    except Exception as e:
-        raise RuntimeError(f"Failed to verify Ankara swap: {e}") from e
-
-    settled = verify_resp.get("settled", False)
-    preimage = verify_resp.get("preimage")
-
-    # Update local swap if it exists
-    if swap and settled:
-        swap.status = "settled"
-        if preimage:
-            swap.preimage = preimage
-        manager.storage.save_ankara_swap(swap)
-
-    result = {
-        "swap_id": swap_id,
-        "settled": settled,
-    }
-    if preimage:
-        result["preimage"] = preimage
-    if wallet_name:
-        result["wallet_name"] = wallet_name
-
-    return result
+    manager = get_lightning_manager()
+    return manager.get_receive_status(swap_id)
 
 
 # Tool registry for MCP
@@ -898,9 +652,7 @@ TOOLS = {
     "btc_transactions": btc_transactions,
     "btc_send": btc_send,
     "unified_balance": unified_balance,
-    "lbtc_pay_lightning_invoice": lbtc_pay_lightning_invoice,
-    "lbtc_swap_lightning_status": lbtc_swap_lightning_status,
-    "ankara_ln_receive": ankara_ln_receive,
-    "ankara_ln_claim": ankara_ln_claim,
-    "ankara_ln_verify": ankara_ln_verify,
+    "lightning_receive": lightning_receive,
+    "lightning_send": lightning_send,
+    "lightning_transaction_status": lightning_transaction_status,
 }
