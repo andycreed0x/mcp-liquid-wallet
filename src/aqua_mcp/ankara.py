@@ -8,7 +8,7 @@ from dataclasses import asdict, dataclass
 from typing import Optional
 
 # API URL with environment variable override
-ANKARA_API_URL = os.environ.get("ANKARA_API_URL", "https://test.aquabtc.com")
+ANKARA_API_URL = os.environ.get("ANKARA_API_URL", "https://ankara.aquabtc.com")
 
 # Swap amount limits (satoshis)
 MIN_SWAP_AMOUNT_SATS = 100
