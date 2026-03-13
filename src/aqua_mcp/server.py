@@ -8,7 +8,6 @@ from typing import Any
 
 from dotenv import load_dotenv
 
-# Load .env from project root before any module reads env vars
 _project_root = Path(__file__).resolve().parent.parent.parent
 load_dotenv(_project_root / ".env")
 
@@ -27,12 +26,10 @@ from mcp.types import (
 from . import __version__
 from .tools import TOOLS
 
-# Configure logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 
-# Tool schemas for MCP
 TOOL_SCHEMAS = {
     "lw_generate_mnemonic": {
         "description": "Generate a new BIP39 mnemonic phrase for creating a Liquid wallet",
