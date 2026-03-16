@@ -16,6 +16,7 @@ import base64
 
 
 DEFAULT_DIR = Path.home() / ".aqua-mcp"
+SWAP_ID_PATTERN = re.compile(r'^[a-zA-Z0-9_-]{1,128}$')
 
 
 @dataclass
@@ -226,7 +227,7 @@ class Storage:
 
     def _swap_path(self, swap_id: str) -> Path:
         """Get path to swap file, validating the ID to prevent path traversal."""
-        if not re.fullmatch(r'[a-zA-Z0-9_-]{1,128}', swap_id):
+        if not SWAP_ID_PATTERN.fullmatch(swap_id):
             raise ValueError(
                 f"Invalid swap ID '{swap_id}'. "
                 "Use only letters, numbers, hyphens and underscores (max 128 chars)."
@@ -252,14 +253,14 @@ class Storage:
         """List all swap IDs."""
         return [
             p.stem for p in self.swaps_dir.glob("*.json")
-            if re.fullmatch(r'[a-zA-Z0-9_-]{1,128}', p.stem)
+            if SWAP_ID_PATTERN.fullmatch(p.stem)
         ]
 
     # Ankara swap operations
 
     def _ankara_swap_path(self, swap_id: str) -> Path:
         """Get path to Ankara swap file, validating the ID to prevent path traversal."""
-        if not re.fullmatch(r'[a-zA-Z0-9_-]{1,128}', swap_id):
+        if not SWAP_ID_PATTERN.fullmatch(swap_id):
             raise ValueError(
                 f"Invalid swap ID '{swap_id}'. "
                 "Use only letters, numbers, hyphens and underscores (max 128 chars)."
@@ -285,14 +286,14 @@ class Storage:
         """List all Ankara swap IDs."""
         return [
             p.stem for p in self.ankara_swaps_dir.glob("*.json")
-            if re.fullmatch(r'[a-zA-Z0-9_-]{1,128}', p.stem)
+            if SWAP_ID_PATTERN.fullmatch(p.stem)
         ]
 
     # Lightning swap operations
 
     def _lightning_swap_path(self, swap_id: str) -> Path:
         """Get path to Lightning swap file, validating the ID to prevent path traversal."""
-        if not re.fullmatch(r'[a-zA-Z0-9_-]{1,128}', swap_id):
+        if not SWAP_ID_PATTERN.fullmatch(swap_id):
             raise ValueError(
                 f"Invalid swap ID '{swap_id}'. "
                 "Use only letters, numbers, hyphens and underscores (max 128 chars)."
@@ -318,7 +319,7 @@ class Storage:
         """List all Lightning swap IDs."""
         return [
             p.stem for p in self.lightning_swaps_dir.glob("*.json")
-            if re.fullmatch(r'[a-zA-Z0-9_-]{1,128}', p.stem)
+            if SWAP_ID_PATTERN.fullmatch(p.stem)
         ]
 
     # Cache operations
