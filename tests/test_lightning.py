@@ -261,47 +261,55 @@ class TestLightningManagerReceive:
 class TestLightningManagerSend:
     """Tests for LightningManager.pay_invoice()."""
 
-    def test_send_happy_path(self, test_wallet, isolated_managers):
+    @patch("aqua_mcp.lightning.generate_keypair")
+    @patch.object(
+        type(get_manager()),
+        "get_balance",
+        return_value=[
+            Balance(
+                asset_id="policy_asset",
+                asset_name="L-BTC",
+                ticker="L-BTC",
+                amount=100000,
+            )
+        ],
+    )
+    @patch("aqua_mcp.lightning.decode_bolt11_amount_sats")
+    @patch("aqua_mcp.lightning.BoltzClient")
+    @patch("aqua_mcp.wallet.WalletManager.send")
+    def test_send_happy_path(
+        self,
+        mock_send,
+        mock_boltz,
+        mock_decode,
+        mock_get_balance,
+        mock_keygen,
+        test_wallet,
+        isolated_managers,
+    ):
         """Happy path: valid invoice, creates swap and sends L-BTC."""
-        with patch("aqua_mcp.wallet.WalletManager.send") as mock_send:
-            mock_send.return_value = "lockup_txid_123"
+        mock_send.return_value = "lockup_txid_123"
+        mock_keygen.return_value = ("privkey", "pubkey")
 
-            manager = get_lightning_manager()
+        manager = get_lightning_manager()
 
-            with patch("aqua_mcp.lightning.BoltzClient") as mock_boltz:
-                with patch("aqua_mcp.lightning.decode_bolt11_amount_sats") as mock_decode:
-                    with patch.object(
-                        type(get_manager()),
-                        "get_balance",
-                        return_value=[
-                            Balance(
-                                asset_id="policy_asset",
-                                asset_name="L-BTC",
-                                ticker="L-BTC",
-                                amount=100000,
-                            )
-                        ],
-                    ):
-                        mock_boltz_client = MagicMock()
-                        mock_boltz.return_value = mock_boltz_client
-                        mock_boltz_client.get_submarine_pairs.return_value = MOCK_BOLTZ_SUBMARINE_PAIRS
-                        mock_boltz_client.create_submarine_swap.return_value = MOCK_BOLTZ_SWAP_RESPONSE
-                        mock_decode.return_value = 50000
+        mock_boltz_client = MagicMock()
+        mock_boltz.return_value = mock_boltz_client
+        mock_boltz_client.get_submarine_pairs.return_value = MOCK_BOLTZ_SUBMARINE_PAIRS
+        mock_boltz_client.create_submarine_swap.return_value = MOCK_BOLTZ_SWAP_RESPONSE
+        mock_decode.return_value = 50000
 
-                        with patch("aqua_mcp.lightning.generate_keypair") as mock_keygen:
-                            mock_keygen.return_value = ("privkey", "pubkey")
+        swap = manager.pay_invoice(VALID_INVOICE_MAINNET, "default")
 
-                            swap = manager.pay_invoice(VALID_INVOICE_MAINNET, "default")
+        assert swap.swap_id == "boltz_swap_123"
+        assert swap.swap_type == "send"
+        assert swap.provider == "boltz"
+        assert swap.status == "processing"
+        assert swap.lockup_txid == "lockup_txid_123"
+        assert swap.refund_private_key == "privkey"
 
-                            assert swap.swap_id == "boltz_swap_123"
-                            assert swap.swap_type == "send"
-                            assert swap.provider == "boltz"
-                            assert swap.status == "processing"
-                            assert swap.lockup_txid == "lockup_txid_123"
-                            assert swap.refund_private_key == "privkey"
-
-                            loaded = isolated_managers.storage.load_lightning_swap(swap.swap_id)
-                            assert loaded is not None
+        loaded = isolated_managers.storage.load_lightning_swap(swap.swap_id)
+        assert loaded is not None
 
     def test_send_invalid_invoice_format(self, test_wallet):
         """Invalid invoice format raises ValueError."""
@@ -339,91 +347,104 @@ class TestLightningManagerSend:
             with pytest.raises(ValueError, match="below minimum"):
                 manager.pay_invoice(VALID_INVOICE_MAINNET, "default")
 
-    def test_send_insufficient_balance(self, test_wallet):
+    @patch.object(
+        type(get_manager()),
+        "get_balance",
+        return_value=[],  # No balance
+    )
+    @patch("aqua_mcp.lightning.decode_bolt11_amount_sats")
+    def test_send_insufficient_balance(
+        self, mock_decode, mock_get_balance, test_wallet
+    ):
         """Insufficient L-BTC balance raises ValueError before Boltz call."""
+        mock_decode.return_value = 100000
         manager = get_lightning_manager()
 
-        with patch("aqua_mcp.lightning.decode_bolt11_amount_sats") as mock_decode:
-            with patch.object(
-                type(get_manager()),
-                "get_balance",
-                return_value=[],  # No balance
-            ):
-                mock_decode.return_value = 100000
+        with pytest.raises(ValueError, match="Insufficient L-BTC balance"):
+            manager.pay_invoice(VALID_INVOICE_MAINNET, "default")
 
-                with pytest.raises(ValueError, match="Insufficient L-BTC balance"):
-                    manager.pay_invoice(VALID_INVOICE_MAINNET, "default")
-
-    def test_send_pair_not_available(self, test_wallet):
+    @patch.object(
+        type(get_manager()),
+        "get_balance",
+        return_value=[
+            Balance(
+                asset_id="policy_asset",
+                asset_name="L-BTC",
+                ticker="L-BTC",
+                amount=100000,
+            )
+        ],
+    )
+    @patch("aqua_mcp.lightning.decode_bolt11_amount_sats")
+    @patch("aqua_mcp.lightning.BoltzClient")
+    def test_send_pair_not_available(
+        self, mock_boltz, mock_decode, mock_get_balance, test_wallet
+    ):
         """Boltz pair unavailable raises ValueError."""
+        mock_boltz_client = MagicMock()
+        mock_boltz.return_value = mock_boltz_client
+        mock_boltz_client.get_submarine_pairs.return_value = {}
+        mock_decode.return_value = 100000
+
         manager = get_lightning_manager()
 
-        with patch("aqua_mcp.lightning.BoltzClient") as mock_boltz:
-            with patch("aqua_mcp.lightning.decode_bolt11_amount_sats") as mock_decode:
-                with patch.object(
-                    type(get_manager()),
-                    "get_balance",
-                    return_value=[
-                        Balance(
-                            asset_id="policy_asset",
-                            asset_name="L-BTC",
-                            ticker="L-BTC",
-                            amount=100000,
-                        )
-                    ],
-                ):
-                    mock_boltz_client = MagicMock()
-                    mock_boltz.return_value = mock_boltz_client
-                    mock_boltz_client.get_submarine_pairs.return_value = {}
-                    mock_decode.return_value = 100000
+        with pytest.raises(ValueError, match="pair not available"):
+            manager.pay_invoice(VALID_INVOICE_MAINNET, "default")
 
-                    with pytest.raises(ValueError, match="pair not available"):
-                        manager.pay_invoice(VALID_INVOICE_MAINNET, "default")
-
-    def test_send_persists_before_sending(self, test_wallet, isolated_managers):
+    @patch("aqua_mcp.lightning.generate_keypair")
+    @patch.object(
+        type(get_manager()),
+        "send",
+        side_effect=None,  # Will be set in method
+    )
+    @patch.object(
+        type(get_manager()),
+        "get_balance",
+        return_value=[
+            Balance(
+                asset_id="policy_asset",
+                asset_name="L-BTC",
+                ticker="L-BTC",
+                amount=100000,
+            )
+        ],
+    )
+    @patch("aqua_mcp.lightning.decode_bolt11_amount_sats")
+    @patch("aqua_mcp.lightning.BoltzClient")
+    def test_send_persists_before_sending(
+        self,
+        mock_boltz,
+        mock_decode,
+        mock_get_balance,
+        mock_send,
+        mock_keygen,
+        test_wallet,
+        isolated_managers,
+    ):
         """Swap is persisted to disk BEFORE sending L-BTC."""
-        manager = get_lightning_manager()
-
         send_called = False
 
-        def mock_send(wallet, addr, amount, passphrase=None):
+        def mock_send_impl(wallet, addr, amount, passphrase=None):
             nonlocal send_called
             send_called = True
             swaps = isolated_managers.storage.list_lightning_swaps()
             assert len(swaps) > 0
             return "txid"
 
-        with patch("aqua_mcp.lightning.BoltzClient") as mock_boltz:
-            with patch("aqua_mcp.lightning.decode_bolt11_amount_sats") as mock_decode:
-                with patch.object(
-                    type(get_manager()),
-                    "get_balance",
-                    return_value=[
-                        Balance(
-                            asset_id="policy_asset",
-                            asset_name="L-BTC",
-                            ticker="L-BTC",
-                            amount=100000,
-                        )
-                    ],
-                ):
-                    with patch.object(
-                        type(get_manager()),
-                        "send",
-                        side_effect=mock_send,
-                    ):
-                        mock_boltz_client = MagicMock()
-                        mock_boltz.return_value = mock_boltz_client
-                        mock_boltz_client.get_submarine_pairs.return_value = MOCK_BOLTZ_SUBMARINE_PAIRS
-                        mock_boltz_client.create_submarine_swap.return_value = MOCK_BOLTZ_SWAP_RESPONSE
-                        mock_decode.return_value = 100000
+        mock_send.side_effect = mock_send_impl
+        mock_keygen.return_value = ("privkey", "pubkey")
 
-                        with patch("aqua_mcp.lightning.generate_keypair") as mock_keygen:
-                            mock_keygen.return_value = ("privkey", "pubkey")
+        manager = get_lightning_manager()
 
-                            manager.pay_invoice(VALID_INVOICE_MAINNET, "default")
+        mock_boltz_client = MagicMock()
+        mock_boltz.return_value = mock_boltz_client
+        mock_boltz_client.get_submarine_pairs.return_value = MOCK_BOLTZ_SUBMARINE_PAIRS
+        mock_boltz_client.create_submarine_swap.return_value = MOCK_BOLTZ_SWAP_RESPONSE
+        mock_decode.return_value = 100000
 
-                            assert send_called
+        manager.pay_invoice(VALID_INVOICE_MAINNET, "default")
+
+        assert send_called
 
 
 class TestLightningManagerReceiveStatus:
