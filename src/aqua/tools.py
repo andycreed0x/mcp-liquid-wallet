@@ -1233,7 +1233,7 @@ def wapupay_create_order(
 
     The result includes `address_destination` (a Liquid address), `asset_id`
     (USDT on Liquid), `funding_amount_usdt`, `total_amount_usdt`,
-    `total_funding_amount_base_units`, and `funding_expires_at`. Pay the TOTAL
+    `total_funding_amount_base_units`, and `expires_at`. Pay the TOTAL
     with `lw_send_asset` (amount = `total_funding_amount_base_units`, the exact
     total_amount_usdt in USDT base units; asset_id from the response); WapuPay
     then settles `amount_ars` ARS to the bank account. This tool never
@@ -1258,7 +1258,7 @@ def wapupay_create_order(
     Returns:
         The order record incl. tentative_id, status, address_destination,
         asset_id, funding_amount_usdt, total_amount_usdt,
-        total_funding_amount_base_units, funding_expires_at, funded,
+        total_funding_amount_base_units, expires_at, funded,
         pay_instructions, and qr_code_path (QR of the funding address).
     """
     result = get_wapupay_manager().create_order(

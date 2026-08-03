@@ -219,7 +219,7 @@ FUNDING_RESP = {
     "address_destination": "lq1qqfunding0address",
     "asset_id": "ce091c998b83c78bb71a632313ba3760f1763d9cfcffae02258ffa9865a37bd2",
     "funding_amount_usdt": 6.99,
-    "funding_expires_at": "2026-05-24T14:35:00Z",
+    "expires_at": "2026-05-24T14:35:00Z",
 }
 
 

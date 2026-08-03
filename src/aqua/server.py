@@ -1141,7 +1141,7 @@ TOOL_SCHEMAS = {
             "Creates the tentative (freezing the quote) and issues "
             "funding instructions. Returns address_destination (Liquid), asset_id "
             "(USDT), funding_amount_usdt, total_amount_usdt, "
-            "total_funding_amount_base_units, funding_expires_at and a QR. Pay the "
+            "total_funding_amount_base_units, expires_at and a QR. Pay the "
             "TOTAL with lw_send_asset (amount = total_funding_amount_base_units); "
             "WapuPay then makes a P2P payer settle ARS to the bank account. Does NOT broadcast the "
             "payment itself — confirm the quote with the user first via wapupay_quote."
