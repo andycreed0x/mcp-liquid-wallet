@@ -1143,7 +1143,7 @@ TOOL_SCHEMAS = {
             "funding instructions. Returns address_destination (Liquid), asset_id, "
             "funding_amount_usdt, total_amount_usdt, "
             "total_funding_amount_base_units (for USDT), funding_amount_sat (for LBTC), "
-            "funding_expires_at and a QR. Pay the TOTAL with lw_send_asset (amount "
+            "expires_at and a QR. Pay the TOTAL with lw_send_asset (amount "
             "and unit depend on funding_method — follow pay_instructions); "
             "WapuPay then makes a P2P payer settle ARS to the bank account. Does NOT broadcast the "
             "payment itself — confirm the quote with the user first via wapupay_quote."

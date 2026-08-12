@@ -236,7 +236,6 @@ _TENTATIVE_RESP_FIELDS = (
     "address_destination",
     "asset_id",
     "expires_at",
-    "funding_expires_at",
     "refund_address",
     "funding_transaction_id",
     "executed_transaction_id",
@@ -337,7 +336,6 @@ class WapuPayOrder:
     address_destination: Optional[str] = None
     asset_id: Optional[str] = None
     expires_at: Optional[str] = None
-    funding_expires_at: Optional[str] = None
     refund_address: Optional[str] = None
     funding_transaction_id: Optional[str] = None
     executed_transaction_id: Optional[str] = None
@@ -748,7 +746,7 @@ class WapuPayManager:
 
         Returns the order record including ``address_destination`` (Liquid),
         ``asset_id``, ``funding_amount_usdt`` / ``total_amount_usdt`` and
-        ``funding_expires_at`` — plus ``total_funding_amount_base_units`` (USDT
+        ``expires_at`` — plus ``total_funding_amount_base_units`` (USDT
         rail) or ``funding_amount_sat`` (L-BTC rail). The caller pays the amount
         named in ``pay_instructions`` with ``lw_send_asset`` — this method never
         broadcasts.
@@ -927,9 +925,9 @@ class WapuPayManager:
             return result
 
         expires_note = (
-            f" Funding window: expires at {order.funding_expires_at} UTC"
+            f" Funding window: expires at {order.expires_at} UTC"
             f" (convert to the user's local timezone before displaying)."
-            if order.funding_expires_at
+            if order.expires_at
             else ""
         )
         payout_note = (

@@ -1233,7 +1233,7 @@ def wapupay_create_order(
     `wapupay_fund_order` — no silent failure.
 
     The result includes `address_destination` (a Liquid address),
-    `funding_amount_usdt`, `total_amount_usdt`, `funding_expires_at`, and a
+    `funding_amount_usdt`, `total_amount_usdt`, `expires_at`, and a
     `pay_instructions` field that tells you the exact amount and unit to send —
     follow it. For the default `USDT` rail, pay the TOTAL with `lw_send_asset`
     (amount = `total_funding_amount_base_units`, the exact total_amount_usdt in
@@ -1263,7 +1263,7 @@ def wapupay_create_order(
     Returns:
         The order record incl. tentative_id, status, address_destination,
         asset_id, funding_amount_usdt, total_amount_usdt,
-        total_funding_amount_base_units, funding_expires_at, funded,
+        total_funding_amount_base_units, expires_at, funded,
         pay_instructions, and qr_code_path (QR of the funding address).
     """
     result = get_wapupay_manager().create_order(
