@@ -1,7 +1,7 @@
-"""WapuPay direct-fiat payments (Argentine ARS payouts funded with Liquid USDT).
+"""WapuPay direct-fiat payments (Argentine ARS payouts funded on Liquid).
 
 A WapuPay **direct-fiat** order lets a user pay an Argentine bank account
-(by alias / CBU / CVU) in **ARS**, funding the payout with **USDT on Liquid**.
+(by alias / CBU / CVU) in **ARS**, funding the payout with **USDT or L-BTC on Liquid**.
 WapuPay's API is called **directly** (``https://be-prod.wapu.app`` by default;
 override with ``WAPUPAY_BASE_URL`` for staging, e.g. ``be-stage.wapu.app``).
 Each call carries WapuPay's own ``X-API-Key`` (read lazily from the
@@ -25,7 +25,7 @@ Two independent auth surfaces (see CLAUDE.md):
 Direct-fiat flow (the "order"):
 
     quote (preview)  →  create_order (create-tentative + issue-funding)
-                     →  pay the returned Liquid USDT address (lw_send_asset)
+                     →  pay the returned Liquid address (lw_send_asset)
                      →  WapuPay settles ARS to the bank account.
 
 Tentative status machine: ``CREATED → FUNDING_ISSUED → EXECUTED`` with terminals
@@ -73,9 +73,10 @@ WAPUPAY_API_KEY_ENV = "WAPUPAY_API_KEY"
 
 # Funding rail: the payout is always settled from a Liquid address, but the
 # caller may fund it with either USDT or L-BTC. Both are sent explicitly on the
-# wire. WapuPay returns funding_amount_sat ONLY for the L-BTC rail (USDT is
-# priced purely in USDT terms), so downstream code branches on funding_currency
-# when telling the user exactly what to send.
+# wire. WapuPay returns the sat figures ONLY for the L-BTC rail (USDT is priced
+# purely in USDT terms), so downstream code branches on funding_currency when
+# telling the user exactly what to send. The send amount is total_amount_sats;
+# funding_amount_sat is the pre-fee payout and is kept for the record only.
 FUNDING_METHOD_USDT = "USDT"
 FUNDING_METHOD_LBTC = "LBTC"
 FUNDING_METHODS = (FUNDING_METHOD_USDT, FUNDING_METHOD_LBTC)
@@ -96,11 +97,11 @@ WAPUPAY_ABOUT = """\
 # What is WapuPay?
 
 WapuPay lets you pay an Argentine bank account in **pesos (ARS)**, funding the
-payout with **USDT on the Liquid network**.
+payout with **USDT or L-BTC on the Liquid network**.
 
 **It is NOT an exchange.** WapuPay is an *automated peer-to-peer (P2P) platform*:
 it finds a trusted P2P payer who settles the payment in Argentine pesos on your
-behalf — think of it as an "Uber for P2P". You send USDT on Liquid; a matched
+behalf — think of it as an "Uber for P2P". You send USDT or L-BTC on Liquid; a matched
 payer pushes the pesos to the recipient's bank account.
 
 WapuPay operates as an escrow:
@@ -111,7 +112,7 @@ both parties, preventing assets from being lost in the process.
 
 - Check the USDT/ARS exchange rate (`wapupay_exchange_rates` / `aqua wapupay rates`).
 - Preview the cost of a payment without committing (`wapupay_quote` / `aqua wapupay quote`).
-- Create an order and get a Liquid USDT address to fund (`wapupay_create_order` /
+- Create an order and get a Liquid funding address (`wapupay_create_order` /
   `aqua wapupay create-order`); pay that address and WapuPay orchestrates the operation with a P2P payer that settles the ARS.
 - Track your orders/transactions and check your monthly spending limit.
 - Where can I send money? To a bank account, alias, CBU, CVU, MercadoPago, Wapu ID, or USDT address, depending on operational availability.
@@ -128,13 +129,13 @@ both parties, preventing assets from being lost in the process.
 
 ## After funding
 
-After paying the Liquid USDT address, WapuPay orchestrates the operation with a P2P payer that settles the ARS.
+After paying the Liquid funding address, WapuPay orchestrates the operation with a P2P payer that settles the ARS.
 Check the status of the order often with order-status and take the executed_transaction_id to use it with `transaction --id`,
 the executed_transaction contain the details of the fiat transfer and the fiat transfer receipt.
 
 ## What happens if the order fails?
 
-If the order fails, you will receive the funds back to the Liquid USDT address that you provided in the field refund_address after 24 hours.
+If the order fails, you will receive the funds back to the Liquid address that you provided in the field refund_address after 24 hours.
 If you need support, you can contact WapuPay support at wapupay.com
 """
 
@@ -196,7 +197,7 @@ def usdt_to_base_units(amount_usdt: str | int | float | Decimal) -> int:
     L-USDt has precision 8 (8 decimal places), so 1 USDT = 100_000_000 base
     units — the same scale as L-BTC satoshis, but these are USDT units, not
     bitcoin sats. Kept deliberately distinct from WapuPay's wire
-    ``funding_amount_sat`` (real BTC/Lightning satoshis) so the two are never
+    ``total_amount_sats`` (real bitcoin satoshis) so the two are never
     conflated.
     """
     try:
@@ -232,6 +233,7 @@ _TENTATIVE_RESP_FIELDS = (
     "fee_amount_usdt",
     "funding_amount_usdt",
     "funding_amount_sat",
+    "total_amount_sats",
     "total_amount_usdt",
     "address_destination",
     "asset_id",
@@ -276,7 +278,7 @@ def validate_liquid_refund_address(address: str) -> str:
     if not parsed.network().is_mainnet():
         raise ValueError(
             f"refund_address {address!r} is not a Liquid mainnet address. "
-            "WapuPay refunds USDT on Liquid mainnet — use an lq1…/ex1… address."
+            "WapuPay refunds on Liquid mainnet — use an lq1…/ex1… address."
         )
     return addr
 
@@ -328,8 +330,13 @@ class WapuPayOrder:
     exchange_rate: Optional[Decimal] = None
     fee_amount_usdt: Optional[Decimal] = None
     funding_amount_usdt: Optional[Decimal] = None
-    # Amount in satoshis for Lightning/BTC funding only; None otherwise.
+    # RECORD ONLY — never the send amount. WapuPay returns funding_amount_sat as
+    # the pre-fee payout, mirroring funding_amount_usdt; the amount to send is
+    # total_amount_sats (mirroring total_amount_usdt). The two sat figures are
+    # equal today, so reading this one would happen to work — until it doesn't.
     funding_amount_sat: Optional[int] = None
+    # The exact L-BTC satoshis to send, fee included. Authoritative on the L-BTC rail.
+    total_amount_sats: Optional[int] = None
     total_amount_usdt: Optional[Decimal] = None
     # Integer USDT amount (precision-8) to send on Liquid; derived from total_amount_usdt.
     total_funding_amount_base_units: Optional[int] = None
@@ -350,16 +357,26 @@ class WapuPayOrder:
             if value is not None and not isinstance(value, Decimal):
                 setattr(self, fld, _to_decimal(value))
 
+    @property
+    def is_lbtc(self) -> bool:
+        """True when the payout is funded with L-BTC rather than USDT.
+
+        Case-insensitive: this drives every money-denomination branch, and
+        ``funding_currency`` can arrive either from the caller's request or from
+        WapuPay's echo.
+        """
+        return (self.funding_currency or "").upper() == FUNDING_METHOD_LBTC
+
     def _derive_base_units(self, *, only_if_missing: bool = False) -> None:
         """Set total_funding_amount_base_units from total_amount_usdt: the exact
         integer USDT amount (precision-8) to send on the USDT rail.
 
-        USDT-only. On the L-BTC rail the amount to send is funding_amount_sat;
+        USDT-only. On the L-BTC rail the amount to send is total_amount_sats;
         this USDT-scale figure must NEVER be advertised alongside the L-BTC
         asset_id (a consumer pairing the two would send ~10^8x too much), so it
         is cleared rather than derived."""
 
-        if self.funding_currency == FUNDING_METHOD_LBTC:
+        if self.is_lbtc:
             self.total_funding_amount_base_units = None
             return
         if only_if_missing and self.total_funding_amount_base_units is not None:
@@ -377,15 +394,16 @@ class WapuPayOrder:
     @classmethod
     def from_dict(cls, data: dict) -> "WapuPayOrder":
         data = dict(data)
-        # Drop a stale USDT-derived funding_amount_sat from legacy records: the
-        # USDT-on-Liquid rail never has real sats. The L-BTC-on-Liquid rail DOES
-        # (funding_amount_sat is the real amount to send), so it must survive a
-        # reload — key off funding_currency, not just the network, to tell them
-        # apart. A non-Liquid rail (e.g. Lightning) already short-circuits here.
+        # Drop stale sat amounts from legacy records: the USDT-on-Liquid rail
+        # never has real sats. The L-BTC-on-Liquid rail DOES (total_amount_sats
+        # is the real amount to send), so it must survive a reload — key off
+        # funding_currency, not just the network, to tell them apart. A
+        # non-Liquid rail (e.g. Lightning) already short-circuits here.
         network = (data.get("funding_network") or "").upper()
         currency = (data.get("funding_currency") or "").upper()
         if network in ("", FUNDING_NETWORK_LIQUID) and currency in ("", FUNDING_METHOD_USDT):
             data.pop("funding_amount_sat", None)
+            data.pop("total_amount_sats", None)
         known = {f.name for f in fields(cls)}
         # __post_init__ coerces money to Decimal; back-fill the send amount for
         # legacy records that predate total_funding_amount_base_units.
@@ -414,7 +432,18 @@ class WapuPayOrder:
         # total_amount_usdt to avoid stale values; distinct from funding_amount_sat (BTC).
 
         self._derive_base_units()
-        # Ensure funding_amount_sat remains an integer per WapuPay spec.
+        # Sats are integers end-to-end (see CLAUDE.md invariant 1). total_amount_sats
+        # is the L-BTC send amount, so a fractional wire value is a contract
+        # violation, not something to round: truncating it would underpay and
+        # WapuPay would not settle.
+        if isinstance(self.total_amount_sats, float):
+            if not self.total_amount_sats.is_integer():
+                raise ValueError(
+                    f"WapuPay returned a fractional total_amount_sats: "
+                    f"{self.total_amount_sats!r} (satoshis must be whole)"
+                )
+            self.total_amount_sats = int(self.total_amount_sats)
+        # funding_amount_sat is record-only; keep it an int for a clean round-trip.
         if isinstance(self.funding_amount_sat, float):
             self.funding_amount_sat = int(self.funding_amount_sat)
 
@@ -530,7 +559,7 @@ class WapuPayClient:
         ) or {}
 
     def issue_funding(self, tentative_id: str, *, api_key: str) -> dict:
-        """POST …/tentatives/{uuid}/funding — issue Liquid USDT funding instructions."""
+        """POST …/tentatives/{uuid}/funding — issue Liquid funding instructions."""
         return self._proxy(
             "POST",
             f"transactions/direct-fiat/tentatives/{tentative_id}/funding",
@@ -741,13 +770,13 @@ class WapuPayManager:
 
         ``funding_method`` selects the rail used to fund the payout — ``"USDT"``
         (default) or ``"LBTC"`` — both settle from a Liquid address. WapuPay
-        returns ``funding_amount_sat`` (real sats to send) for the L-BTC rail;
+        returns ``total_amount_sats`` (real sats to send) for the L-BTC rail;
         for USDT the amount to send is ``total_funding_amount_base_units``.
 
         Returns the order record including ``address_destination`` (Liquid),
         ``asset_id``, ``funding_amount_usdt`` / ``total_amount_usdt`` and
         ``expires_at`` — plus ``total_funding_amount_base_units`` (USDT
-        rail) or ``funding_amount_sat`` (L-BTC rail). The caller pays the amount
+        rail) or ``total_amount_sats`` (L-BTC rail). The caller pays the amount
         named in ``pay_instructions`` with ``lw_send_asset`` — this method never
         broadcasts.
         """
@@ -802,8 +831,15 @@ class WapuPayManager:
             receiver_name=(receiver_name.strip() if receiver_name else None),
             refund_address=refund,
             wallet_name=wallet_name,
+            # The REQUESTED rail is authoritative and is recorded before any
+            # response is merged. funding_currency drives every money-denomination
+            # branch, so leaving it to WapuPay's optional echo would let a single
+            # missing key re-denominate an L-BTC order in USDT terms.
+            funding_currency=funding_method,
+            funding_network=FUNDING_NETWORK_LIQUID,
         )
         order.apply_tentative(created)
+        self._assert_rail(order, funding_method, funded=False)
         # Persist BEFORE funding — a crash/failure mid-funding stays recoverable.
         self.storage.save_wapupay_order(order)
 
@@ -821,9 +857,43 @@ class WapuPayManager:
             return result
 
         order.apply_tentative(funding)
+        # Re-check after the SECOND merge: the funding response overwrites
+        # funding_currency, so a rail that flips here would re-derive the other
+        # rail's amounts while asset_id still points at the first one.
+        self._assert_rail(order, funding_method, funded=True)
         order.last_error = None
         self.storage.save_wapupay_order(order)
         return self._funded_result(order)
+
+    def _assert_rail(self, order: "WapuPayOrder", funding_method: str, *, funded: bool) -> None:
+        """Refuse to continue if WapuPay's echoed rail contradicts the request.
+
+        The rail selects the denomination of the amount the user is told to send
+        (sats vs USDT base units) while ``asset_id`` selects the asset. If the two
+        disagree the caller can overpay by ~10^8x, so this raises rather than
+        re-deriving (CLAUDE.md invariant 5 — no silent fallback).
+        """
+        echoed = (order.funding_currency or "").upper()
+        if not echoed or echoed == funding_method:
+            return
+        detail = (
+            f"WapuPay echoed funding_currency={order.funding_currency!r} for a "
+            f"funding_method={funding_method!r} order; refusing to continue. "
+            f"The tentative exists upstream as {order.tentative_id}"
+        )
+        if funded:
+            # Already persisted: record why it stalled so the local record isn't
+            # a silent orphan, then refuse to hand back pay_instructions.
+            order.last_error = detail
+            # Restore the REQUESTED rail before saving. Clearing the derived
+            # amount here would not stick — from_dict re-derives it on every
+            # load — so the record must be left self-consistent (requested rail
+            # + matching asset_id) instead of carrying a contradictory mix.
+            order.funding_currency = funding_method
+            order._derive_base_units()
+            self.storage.save_wapupay_order(order)
+            raise ValueError(f"{detail}; funding was issued but is NOT safe to pay.")
+        raise ValueError(f"{detail} and will expire on its own; it was NOT funded.")
 
     def fund_order(self, tentative_id: str) -> dict:
         """Issue (or re-issue) funding instructions for an existing order."""
@@ -937,20 +1007,18 @@ class WapuPayManager:
             "stored locally for this order."
         )
 
-        if order.funding_currency == FUNDING_METHOD_LBTC and order.funding_amount_sat is not None:
-            # L-BTC rail: WapuPay returns the REAL sat amount to send (already
-            # fee-inclusive). Send sats of L-BTC, never the USDT base units.
+        if order.is_lbtc and order.total_amount_sats is not None:
+            # L-BTC rail: total_amount_sats is the fee-inclusive amount to send.
+            # NOT funding_amount_sat — that is the pre-fee payout, the sat
+            # analogue of funding_amount_usdt. Send sats, never USDT base units.
             result["pay_instructions"] = (
-                f"Send exactly {order.funding_amount_sat} sats of L-BTC on Liquid "
+                f"Send exactly {order.total_amount_sats} sats of L-BTC on Liquid "
                 f"to {order.address_destination} using lw_send_asset "
                 f"(asset_id={order.asset_id}). This amount already includes "
                 f"WapuPay's fee — send the full amount or WapuPay won't "
                 f"settle.{payout_note}{expires_note}"
             )
-        elif (
-            order.funding_currency != FUNDING_METHOD_LBTC
-            and order.total_funding_amount_base_units is not None
-        ):
+        elif not order.is_lbtc and order.total_funding_amount_base_units is not None:
             fee_display = order.fee_amount_usdt if order.fee_amount_usdt is not None else 0
             result["pay_instructions"] = (
                 f"Send exactly {order.total_amount_usdt} USDT "
@@ -962,14 +1030,18 @@ class WapuPayManager:
             )
         else:
             # Thin record (e.g. order created on another device): the funding
-            # response carries no total_amount_usdt, so the exact total isn't
-            # known locally. Don't fabricate a "None" amount (No-lies rule) —
-            # point the user at order-status to fetch the real total first.
+            # response carries no total, so the exact amount isn't known locally.
+            # Don't fabricate a "None" amount (No-lies rule) — point the user at
+            # order-status to fetch the real total first. The missing field and
+            # the unit differ per rail, so name the right one: telling an L-BTC
+            # payer to fetch a USDT figure invites a ~10^8x overpayment.
+            missing = "total_amount_sats" if order.is_lbtc else "total_amount_usdt"
+            unit = "L-BTC satoshi" if order.is_lbtc else "USDT"
             result["pay_instructions"] = (
                 f"Funding address ready ({order.address_destination}, "
-                f"asset_id={order.asset_id}), but the exact USDT total to send "
+                f"asset_id={order.asset_id}), but the exact {unit} amount to send "
                 f"is not available locally yet. Call wapupay_order_status with "
-                f"tentative_id={order.tentative_id} to fetch total_amount_usdt, "
+                f"tentative_id={order.tentative_id} to fetch {missing}, "
                 f"then pay that exact amount with lw_send_asset."
             )
         return result

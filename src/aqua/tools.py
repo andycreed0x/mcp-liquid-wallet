@@ -1238,7 +1238,7 @@ def wapupay_create_order(
     follow it. For the default `USDT` rail, pay the TOTAL with `lw_send_asset`
     (amount = `total_funding_amount_base_units`, the exact total_amount_usdt in
     USDT base units; asset_id from the response). For the `LBTC` rail, WapuPay
-    returns `funding_amount_sat` instead, and you send that many sats of L-BTC
+    returns `total_amount_sats` instead, and you send that many sats of L-BTC
     via `lw_send_asset`. WapuPay then settles `amount_ars` ARS to the bank
     account. This tool never broadcasts a payment itself.
 
@@ -1262,9 +1262,10 @@ def wapupay_create_order(
 
     Returns:
         The order record incl. tentative_id, status, address_destination,
-        asset_id, funding_amount_usdt, total_amount_usdt,
-        total_funding_amount_base_units, expires_at, funded,
-        pay_instructions, and qr_code_path (QR of the funding address).
+        asset_id, funding_amount_usdt, total_amount_usdt, expires_at, funded,
+        pay_instructions, and qr_code_path (QR of the funding address). The send
+        amount is rail-specific: total_funding_amount_base_units on the USDT rail,
+        total_amount_sats on the LBTC rail. Follow pay_instructions.
     """
     result = get_wapupay_manager().create_order(
         amount_ars=amount_ars,
@@ -1279,7 +1280,7 @@ def wapupay_create_order(
 
 
 def wapupay_fund_order(tentative_id: str) -> dict[str, Any]:
-    """Issue (or re-issue) Liquid USDT funding instructions for an existing order.
+    """Issue (or re-issue) Liquid funding instructions for an existing order.
 
     Use this to recover an order created without funding, or to re-fetch the
     funding address before it expires.

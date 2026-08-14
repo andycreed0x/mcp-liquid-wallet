@@ -94,7 +94,7 @@ def quote(ctx, amount_ars, transfer_type, alias):
     "--funding-method", "funding_method",
     type=click.Choice(["USDT", "LBTC"]), default="USDT", show_default=True,
     help="Funding rail: USDT (default) or LBTC. Both settle on Liquid; LBTC "
-         "is paid as L-BTC sats, USDT as USDT base units.",
+         "is paid as L-BTC sats (total_amount_sats), USDT as USDT base units.",
 )
 @click.option(
     "--yes", "-y", "skip_confirm", is_flag=True, default=False,
@@ -153,7 +153,7 @@ def create_order(ctx, amount_ars, alias, transfer_type, receiver_name, refund_ad
 @click.option("--tentative-id", required=True, help="Order id from `create-order`.")
 @click.pass_obj
 def fund_order(ctx, tentative_id):
-    """Issue (or re-issue) the Liquid USDT funding instructions for an order."""
+    """Issue (or re-issue) the Liquid funding instructions for an order."""
     run_tool(ctx, lambda: wapupay_fund_order(tentative_id))
 
 
