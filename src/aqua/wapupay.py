@@ -92,6 +92,7 @@ _RAIL_BY_ASSET_ID = {
     LBTC_ASSET_ID: FUNDING_METHOD_LBTC,
     USDT_LIQUID_ASSET_ID: FUNDING_METHOD_USDT,
 }
+_ASSET_ID_BY_RAIL = {rail: asset for asset, rail in _RAIL_BY_ASSET_ID.items()}
 
 # Fiat side is always Argentine pesos
 CURRENCY_PAYMENT_ARS = "ARS"
@@ -891,31 +892,51 @@ class WapuPayManager:
         return self._funded_result(order)
 
     def _assert_rail(self, order: "WapuPayOrder", funding_method: str, *, funded: bool) -> None:
-        """Refuse to continue if WapuPay's echoed rail contradicts the request.
+        """Refuse to continue if WapuPay's echo contradicts the expected rail.
 
         The rail selects the denomination of the amount the user is told to send
-        (sats vs USDT base units) while ``asset_id`` selects the asset. If the two
-        disagree the caller can overpay by ~10^8x, so this raises rather than
-        re-deriving (CLAUDE.md invariant 5 — no silent fallback).
+        (sats vs USDT base units) while ``asset_id`` selects the asset
+        ``lw_send_asset`` actually spends. Both are checked: a flipped
+        ``funding_currency`` re-denominates the amount (~10^8x overpay), and a
+        flipped ``asset_id`` sends the right figure in the wrong asset. Either
+        way this raises rather than re-deriving (CLAUDE.md invariant 5 — no
+        silent fallback).
         """
+        detail = None
+        rail_flipped = False
         echoed = (order.funding_currency or "").upper()
-        if not echoed or echoed == funding_method:
+        if echoed and echoed != funding_method:
+            rail_flipped = True
+            detail = (
+                f"WapuPay echoed funding_currency={order.funding_currency!r} for a "
+                f"funding_method={funding_method!r} order; refusing to continue. "
+                f"The tentative exists upstream as {order.tentative_id}"
+            )
+        else:
+            # Both rails settle in a Liquid policy asset whose id is a global
+            # constant, so any other asset_id is an upstream contract violation.
+            expected_asset = _ASSET_ID_BY_RAIL.get(funding_method)
+            if expected_asset and order.asset_id and order.asset_id != expected_asset:
+                detail = (
+                    f"WapuPay returned asset_id={order.asset_id!r} for a "
+                    f"funding_method={funding_method!r} order (expected "
+                    f"{expected_asset}); refusing to continue. "
+                    f"The tentative exists upstream as {order.tentative_id}"
+                )
+        if detail is None:
             return
-        detail = (
-            f"WapuPay echoed funding_currency={order.funding_currency!r} for a "
-            f"funding_method={funding_method!r} order; refusing to continue. "
-            f"The tentative exists upstream as {order.tentative_id}"
-        )
         if funded:
             # Already persisted: record why it stalled so the local record isn't
             # a silent orphan, then refuse to hand back pay_instructions.
             order.last_error = detail
-            # Restore the REQUESTED rail before saving. Clearing the derived
-            # amount here would not stick — from_dict re-derives it on every
-            # load — so the record must be left self-consistent (requested rail
-            # + matching asset_id) instead of carrying a contradictory mix.
-            order.funding_currency = funding_method
-            order._derive_base_units()
+            if rail_flipped:
+                # Restore the REQUESTED rail before saving. Clearing the derived
+                # amount here would not stick — from_dict re-derives it on every
+                # load — so the record must keep the requested denomination
+                # instead of the flipped one. (asset_id keeps the echoed value;
+                # last_error marks the record as not safe to pay.)
+                order.funding_currency = funding_method
+                order._derive_base_units()
             self.storage.save_wapupay_order(order)
             raise ValueError(f"{detail}; funding was issued but is NOT safe to pay.")
         raise ValueError(f"{detail} and will expire on its own; it was NOT funded.")

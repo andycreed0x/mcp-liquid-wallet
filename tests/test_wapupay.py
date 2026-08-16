@@ -31,7 +31,7 @@ from aqua.ankara import (
     _mask,
     _redact,
 )
-from aqua.assets import LBTC_ASSET_ID
+from aqua.assets import LBTC_ASSET_ID, USDT_LIQUID_ASSET_ID
 from aqua.jan3_accounts import Jan3AccountsManager, Jan3Session
 from aqua.storage import Storage
 from aqua.wapupay import (
@@ -1581,6 +1581,38 @@ def test_create_order_rejects_rail_flip_on_the_funding_response(storage):  # Sig
     saved = storage.load_wapupay_order(TENTATIVE_ID)
     assert saved.total_funding_amount_base_units is None
     assert saved.last_error
+
+
+def test_create_order_rejects_wrong_asset_for_lbtc_rail(storage):  # Sig:5
+    """funding_currency selects the denomination, but asset_id selects the asset
+    lw_send_asset actually spends. A funding response pairing the L-BTC rail
+    with a non-L-BTC asset would make the caller send the sat figure in USDT
+    base units — the order never settles and the funds leave in an asset
+    WapuPay did not quote. Contract violation on a money path: raise."""
+    funding = dict(FUNDING_RESP_LBTC, asset_id=USDT_LIQUID_ASSET_ID)
+    fake = FakeClient({"create_tentative": dict(CREATE_RESP_LBTC), "issue_funding": funding})
+    m = make_manager(storage, fake)
+    with pytest.raises(ValueError, match="asset_id"):
+        m.create_order(
+            amount_ars="24000", alias="al.cbu", transfer_type="fast_fiat_transfer",
+            funding_method=FUNDING_METHOD_LBTC,
+        )
+    # Persisted record is annotated (not a silent orphan) and keeps the rail.
+    saved = storage.load_wapupay_order(TENTATIVE_ID)
+    assert saved.last_error and "asset_id" in saved.last_error
+    assert saved.funding_currency == FUNDING_METHOD_LBTC
+
+
+def test_create_order_rejects_wrong_asset_for_usdt_rail(storage):  # Sig:5
+    """Symmetric guard: a USDT-rail funding response carrying the L-BTC asset id
+    must raise instead of instructing an L-BTC send for a USDT-quoted order."""
+    funding = dict(FUNDING_RESP, asset_id=LBTC_ASSET_ID)
+    fake = FakeClient({"create_tentative": dict(CREATE_RESP), "issue_funding": funding})
+    m = make_manager(storage, fake)
+    with pytest.raises(ValueError, match="asset_id"):
+        m.create_order(amount_ars="10000", alias="al.cbu", transfer_type="fiat_transfer")
+    saved = storage.load_wapupay_order(TENTATIVE_ID)
+    assert saved.last_error and "asset_id" in saved.last_error
 
 
 def test_total_amount_sats_must_be_a_whole_number():  # Sig:5
