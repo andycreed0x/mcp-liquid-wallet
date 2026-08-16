@@ -1712,6 +1712,16 @@ def test_total_amount_sats_must_be_a_whole_number():  # Sig:5
         _lbtc_order(total_amount_sats=10498.5)
 
 
+def test_total_amount_sats_must_be_a_positive_integer():  # Sig:5
+    """The strict boundary rejects the whole class of non-payable values — zero,
+    negative, and string-typed sats — with the same contract-violation
+    ValueError as fractional ones. "Send exactly -25127 sats" must never reach
+    pay_instructions, and a str would round-trip into storage uncoerced."""
+    for bad in (0, -25127, -25127.0, "25127", True):
+        with pytest.raises(ValueError, match="total_amount_sats"):
+            _lbtc_order(total_amount_sats=bad)
+
+
 def test_from_dict_drops_stale_total_amount_sats_on_usdt_record():  # Sig:5
     """A USDT-on-Liquid record has no real sats; a stale sat total must not
     survive a reload and become an L-BTC send amount."""

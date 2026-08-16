@@ -459,16 +459,22 @@ class WapuPayOrder:
 
         self._derive_base_units()
         # Sats are integers end-to-end (see CLAUDE.md invariant 1). total_amount_sats
-        # is the L-BTC send amount, so a fractional wire value is a contract
-        # violation, not something to round: truncating it would underpay and
-        # WapuPay would not settle.
-        if isinstance(self.total_amount_sats, float):
-            if not self.total_amount_sats.is_integer():
+        # is the L-BTC send amount, so anything but a positive whole number is a
+        # contract violation, not something to coerce: rounding a fraction would
+        # underpay, and a zero/negative/string value has no payable meaning. The
+        # USDT rail already rejects non-positive totals (usdt_to_base_units) —
+        # this keeps the L-BTC boundary equally strict.
+        if self.total_amount_sats is not None:
+            value = self.total_amount_sats
+            if isinstance(value, float) and value.is_integer():
+                value = int(value)
+            if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
                 raise ValueError(
-                    f"WapuPay returned a fractional total_amount_sats: "
-                    f"{self.total_amount_sats!r} (satoshis must be whole)"
+                    f"WapuPay returned an invalid total_amount_sats: "
+                    f"{self.total_amount_sats!r} (satoshis must be a positive "
+                    f"whole number)"
                 )
-            self.total_amount_sats = int(self.total_amount_sats)
+            self.total_amount_sats = value
         # funding_amount_sat is record-only; keep it an int for a clean round-trip.
         if isinstance(self.funding_amount_sat, float):
             self.funding_amount_sat = int(self.funding_amount_sat)
