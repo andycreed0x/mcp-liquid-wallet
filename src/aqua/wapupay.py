@@ -54,6 +54,7 @@ from .ankara import (
     _mask,
     _redact,
 )
+from .assets import LBTC_ASSET_ID, USDT_LIQUID_ASSET_ID
 
 logger = logging.getLogger(__name__)
 
@@ -81,6 +82,16 @@ FUNDING_METHOD_USDT = "USDT"
 FUNDING_METHOD_LBTC = "LBTC"
 FUNDING_METHODS = (FUNDING_METHOD_USDT, FUNDING_METHOD_LBTC)
 FUNDING_NETWORK_LIQUID = "LIQUID"
+
+# A known Liquid policy asset pins the rail. Used ONLY when WapuPay omits
+# funding_currency (thin cross-device records / legacy files): asset_id is the
+# field lw_send_asset actually spends by, so it is the one unambiguous rail
+# signal in a funding response. An unknown asset stays un-inferred — the
+# denomination branches must then refuse to name a send amount.
+_RAIL_BY_ASSET_ID = {
+    LBTC_ASSET_ID: FUNDING_METHOD_LBTC,
+    USDT_LIQUID_ASSET_ID: FUNDING_METHOD_USDT,
+}
 
 # Fiat side is always Argentine pesos
 CURRENCY_PAYMENT_ARS = "ARS"
@@ -394,6 +405,13 @@ class WapuPayOrder:
     @classmethod
     def from_dict(cls, data: dict) -> "WapuPayOrder":
         data = dict(data)
+        # Back-fill a missing rail from a known asset_id BEFORE the legacy
+        # scrub below: a currency-less record with the L-BTC asset would
+        # otherwise be treated as legacy USDT and lose its real sat amount.
+        if not (data.get("funding_currency") or "").strip():
+            inferred = _RAIL_BY_ASSET_ID.get(data.get("asset_id") or "")
+            if inferred:
+                data["funding_currency"] = inferred
         # Drop stale sat amounts from legacy records: the USDT-on-Liquid rail
         # never has real sats. The L-BTC-on-Liquid rail DOES (total_amount_sats
         # is the real amount to send), so it must survive a reload — key off
@@ -428,6 +446,13 @@ class WapuPayOrder:
                 if field in _MONEY_FIELDS:
                     value = _to_decimal(value)
                 setattr(self, field, value)
+        # A response that omits funding_currency (thin cross-device records)
+        # must not default to USDT semantics: infer the rail from a known
+        # asset_id before deriving any denomination-dependent amount.
+        if not self.funding_currency:
+            inferred = _RAIL_BY_ASSET_ID.get(self.asset_id or "")
+            if inferred:
+                self.funding_currency = inferred
         # Always recalculate integer USDT base units (precision-8) for Liquid from
         # total_amount_usdt to avoid stale values; distinct from funding_amount_sat (BTC).
 
@@ -1018,7 +1043,10 @@ class WapuPayManager:
                 f"WapuPay's fee — send the full amount or WapuPay won't "
                 f"settle.{payout_note}{expires_note}"
             )
-        elif not order.is_lbtc and order.total_funding_amount_base_units is not None:
+        elif (
+            (order.funding_currency or "").upper() == FUNDING_METHOD_USDT
+            and order.total_funding_amount_base_units is not None
+        ):
             fee_display = order.fee_amount_usdt if order.fee_amount_usdt is not None else 0
             result["pay_instructions"] = (
                 f"Send exactly {order.total_amount_usdt} USDT "
@@ -1028,7 +1056,7 @@ class WapuPayManager:
                 f"WapuPay's {fee_display} USDT fee — send the full "
                 f"amount or WapuPay won't settle.{payout_note}{expires_note}"
             )
-        else:
+        elif (order.funding_currency or "").upper() in FUNDING_METHODS:
             # Thin record (e.g. order created on another device): the funding
             # response carries no total, so the exact amount isn't known locally.
             # Don't fabricate a "None" amount (No-lies rule) — point the user at
@@ -1043,5 +1071,17 @@ class WapuPayManager:
                 f"is not available locally yet. Call wapupay_order_status with "
                 f"tentative_id={order.tentative_id} to fetch {missing}, "
                 f"then pay that exact amount with lw_send_asset."
+            )
+        else:
+            # Rail unknown: WapuPay omitted funding_currency and the asset_id is
+            # not a known policy asset, so even the DENOMINATION of the amount
+            # is unknown. Naming any figure here risks the ~10^8x sat/base-unit
+            # mixup — refuse to instruct a send until a refresh supplies the rail.
+            result["pay_instructions"] = (
+                f"Funding address ready ({order.address_destination}), but the "
+                f"funding rail (USDT vs L-BTC) and the exact amount to send are "
+                f"not known locally. Call wapupay_order_status with "
+                f"tentative_id={order.tentative_id} to fetch funding_currency "
+                f"and the amount before paying anything."
             )
         return result

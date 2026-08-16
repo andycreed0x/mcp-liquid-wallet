@@ -849,6 +849,66 @@ def test_fund_order_thin_record_with_total_but_no_fee_uses_placeholder(storage):
     assert "0 USDT fee" in out["pay_instructions"]
 
 
+def test_fund_order_thin_record_infers_lbtc_rail_from_asset_id(storage):  # Sig:5
+    """Cross-device fund_order for an L-BTC order whose funding response omits
+    funding_currency: the L-BTC asset_id pins the rail. Without the inference
+    the thin record fell into the USDT branch and paired the USDT-scale total
+    (~10^8x too much) with the L-BTC asset id."""
+    funding = {k: v for k, v in FUNDING_RESP_LBTC.items() if k != "funding_currency"}
+    fake = FakeClient({"issue_funding": funding})
+    m = make_manager(storage, fake)
+    out = m.fund_order(TENTATIVE_ID)
+    assert out["funding_currency"] == FUNDING_METHOD_LBTC
+    assert out["total_funding_amount_base_units"] is None
+    instr = out["pay_instructions"]
+    assert "25127 sats" in instr
+    assert "base units" not in instr
+    # The inferred rail is persisted, so a reload keeps the real sat amount
+    # instead of scrubbing it as legacy-USDT residue.
+    saved = storage.load_wapupay_order(TENTATIVE_ID)
+    assert saved.funding_currency == FUNDING_METHOD_LBTC
+    assert saved.total_amount_sats == 25127
+    assert saved.total_funding_amount_base_units is None
+
+
+def test_fund_order_unknown_rail_refuses_to_name_a_send_amount(storage):  # Sig:5
+    """funding_currency absent AND asset_id not a known policy asset: even the
+    DENOMINATION of any figure is unknown, so pay_instructions must never say
+    "Send exactly" — it points at order-status to fetch the rail first."""
+    funding = {
+        "tentative_id": TENTATIVE_ID, "status": "FUNDING_ISSUED",
+        "address_destination": "lq1qqfunding0address",
+        "asset_id": "ab" * 32,  # not a known Liquid policy asset
+        "total_amount_usdt": 15.78, "total_amount_sats": 25127,
+    }
+    fake = FakeClient({"issue_funding": funding})
+    m = make_manager(storage, fake)
+    out = m.fund_order(TENTATIVE_ID)
+    instr = out["pay_instructions"]
+    assert "Send exactly" not in instr
+    assert "wapupay_order_status" in instr
+    assert "None" not in instr
+
+
+def test_from_dict_infers_lbtc_rail_before_the_legacy_scrub():  # Sig:5
+    """A record persisted without funding_currency but with the L-BTC asset must
+    reload as L-BTC: inference runs before the legacy-USDT scrub, so the real
+    sat amount survives and the stale USDT-scale base units are cleared."""
+    poisoned = {
+        "tentative_id": TENTATIVE_ID, "status": "FUNDING_ISSUED",
+        "type": "", "amount_ars": "", "alias": "", "created_at": "t0",
+        "funding_network": FUNDING_NETWORK_LIQUID,
+        "asset_id": LBTC_ASSET_ID,
+        "total_amount_usdt": "15.78",
+        "total_funding_amount_base_units": 1578000000,
+        "total_amount_sats": 25127,
+    }
+    o = WapuPayOrder.from_dict(poisoned)
+    assert o.funding_currency == FUNDING_METHOD_LBTC
+    assert o.total_amount_sats == 25127
+    assert o.total_funding_amount_base_units is None
+
+
 def test_from_dict_migration_drops_stale_sat_on_none_network(storage):  # Sig:5
     """A legacy thin record (funding_network missing) with a stale USDT-derived
     funding_amount_sat must NOT load as a real BTC sat. It's dropped, and the
@@ -1254,6 +1314,7 @@ def test_funded_result_keeps_payout_clause_when_known(storage):  # Sig:5
     order = WapuPayOrder(
         tentative_id=TENTATIVE_ID, status="FUNDING_ISSUED", type="fiat_transfer",
         amount_ars="10000", alias="al.cbu", created_at="t0",
+        funding_currency=FUNDING_METHOD_USDT,
         address_destination="lq1x", asset_id="ce091", total_amount_usdt=Decimal("7.13"),
     )
     order._derive_base_units()
