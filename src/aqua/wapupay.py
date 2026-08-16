@@ -882,7 +882,11 @@ class WapuPayManager:
             )
             return result
 
-        order.apply_tentative(funding)
+        try:
+            order.apply_tentative(funding)
+        except ValueError as e:
+            self._annotate_rejected_response(tentative_id, e)
+            raise
         # Re-check after the SECOND merge: the funding response overwrites
         # funding_currency, so a rail that flips here would re-derive the other
         # rail's amounts while asset_id still points at the first one.
@@ -957,6 +961,21 @@ class WapuPayManager:
         if rail in FUNDING_METHODS:
             self._assert_rail(order, rail, funded=True)
 
+    def _annotate_rejected_response(self, tentative_id: str, error: Exception) -> None:
+        """Mark the persisted record with why a WapuPay response was rejected.
+
+        Mirrors ``_assert_rail(funded=True)``: a raise after funding was issued
+        must not leave the local record a silent orphan. The half-merged
+        in-memory order is NOT saved — a rejected response must not leave its
+        contract-violating values on disk — the clean stored record is
+        annotated instead. No stored record (thin path): nothing to annotate.
+        """
+        stored = self.storage.load_wapupay_order(tentative_id)
+        if stored is None:
+            return
+        stored.last_error = f"Funding response rejected: {error}"
+        self.storage.save_wapupay_order(stored)
+
     def fund_order(self, tentative_id: str) -> dict:
         """Issue (or re-issue) funding instructions for an existing order."""
         # Validate the id BEFORE it reaches URL construction / the network.
@@ -979,7 +998,11 @@ class WapuPayManager:
         # records have no stored rail — the merged/inferred one still gets the
         # asset-consistency half of the check.
         expected_rail = (order.funding_currency or "").upper()
-        order.apply_tentative(funding)
+        try:
+            order.apply_tentative(funding)
+        except ValueError as e:
+            self._annotate_rejected_response(tentative_id, e)
+            raise
         self._assert_known_rail(order, expected_rail)
         order.last_error = None
         self.storage.save_wapupay_order(order)

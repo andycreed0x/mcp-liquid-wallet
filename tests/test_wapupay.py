@@ -1013,6 +1013,42 @@ def test_order_status_rejects_rail_flip_on_existing_record(storage):  # Sig:5
     assert saved.last_error
 
 
+def test_create_order_annotates_record_when_funding_response_is_rejected(storage):  # Sig:5
+    """A funding response that violates the money contract (fractional sats)
+    raises AFTER the order was persisted. The stored record must be annotated
+    with last_error — not left a silent CREATED orphan while upstream funding
+    exists — and must not carry the rejected fractional value."""
+    funding = dict(FUNDING_RESP_LBTC, total_amount_sats=25127.5)
+    fake = FakeClient({"create_tentative": dict(CREATE_RESP_LBTC), "issue_funding": funding})
+    m = make_manager(storage, fake)
+    with pytest.raises(ValueError, match="total_amount_sats"):
+        m.create_order(
+            amount_ars="24000", alias="al.cbu", transfer_type="fast_fiat_transfer",
+            funding_method=FUNDING_METHOD_LBTC,
+        )
+    saved = storage.load_wapupay_order(TENTATIVE_ID)
+    assert saved.last_error and "total_amount_sats" in saved.last_error
+    assert saved.total_amount_sats == 25127  # the create response's clean value
+
+
+def test_fund_order_annotates_stored_record_when_response_is_rejected(storage):  # Sig:5
+    """Recovery via fund_order hits the same contract-violation raise; the
+    stored record gets the same annotation instead of staying un-fundable
+    with no recorded reason."""
+    storage.save_wapupay_order(WapuPayOrder(
+        tentative_id=TENTATIVE_ID, status="CREATED", type="fast_fiat_transfer",
+        amount_ars="24000", alias="al.cbu", created_at="t0",
+        funding_currency=FUNDING_METHOD_LBTC, funding_network=FUNDING_NETWORK_LIQUID,
+    ))
+    funding = dict(FUNDING_RESP_LBTC, total_amount_sats=25127.5)
+    m = make_manager(storage, FakeClient({"issue_funding": funding}))
+    with pytest.raises(ValueError, match="total_amount_sats"):
+        m.fund_order(TENTATIVE_ID)
+    saved = storage.load_wapupay_order(TENTATIVE_ID)
+    assert saved.last_error and "total_amount_sats" in saved.last_error
+    assert saved.total_amount_sats is None  # rejected value never persisted
+
+
 def test_fund_order_thin_record_rejects_echoed_rail_with_wrong_asset(storage):  # Sig:5
     """Thin record: no stored rail to compare, but the echoed rail still gets
     the asset-consistency check — an L-BTC echo with a non-L-BTC asset raises
