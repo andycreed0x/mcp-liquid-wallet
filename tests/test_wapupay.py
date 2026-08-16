@@ -1617,6 +1617,24 @@ def test_lbtc_without_total_sats_states_no_amount_and_never_says_usdt():  # Sig:
     assert "None" not in instr
 
 
+def test_usdt_thin_fallback_names_the_base_units_field():  # Sig:5
+    """The USDT fallback must point at total_funding_amount_base_units — the
+    integer amount lw_send_asset actually takes — not the decimal
+    total_amount_usdt: an agent literally paying the decimal with
+    lw_send_asset underpays by ~10^8x (or errors on a non-integer)."""
+    order = WapuPayOrder(
+        tentative_id=TENTATIVE_ID, status="FUNDING_ISSUED", type="fiat_transfer",
+        amount_ars="10000", alias="al.cbu", created_at="t0",
+        funding_currency=FUNDING_METHOD_USDT,
+        address_destination="lq1qqfunding0address", asset_id=USDT_LIQUID_ASSET_ID,
+    )
+    instr = WapuPayManager._funded_result(order)["pay_instructions"]
+    assert "total_funding_amount_base_units" in instr
+    assert "total_amount_usdt" not in instr
+    assert "wapupay_order_status" in instr
+    assert "None" not in instr
+
+
 def test_create_order_persists_requested_rail_when_wapupay_omits_it(storage):  # Sig:5
     """The caller's requested rail is authoritative. If WapuPay's responses omit
     funding_currency, the order must still be L-BTC — otherwise every

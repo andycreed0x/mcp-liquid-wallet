@@ -1139,11 +1139,16 @@ class WapuPayManager:
             # Thin record (e.g. order created on another device): the funding
             # response carries no total, so the exact amount isn't known locally.
             # Don't fabricate a "None" amount (No-lies rule) — point the user at
-            # order-status to fetch the real total first. The missing field and
-            # the unit differ per rail, so name the right one: telling an L-BTC
-            # payer to fetch a USDT figure invites a ~10^8x overpayment.
-            missing = "total_amount_sats" if order.is_lbtc else "total_amount_usdt"
-            unit = "L-BTC satoshi" if order.is_lbtc else "USDT"
+            # order-status to fetch the real total first. Name the field that is
+            # DIRECTLY payable via lw_send_asset (integer sats / base units) per
+            # rail: pointing an L-BTC payer at a USDT figure invites a ~10^8x
+            # overpay, and pointing a USDT payer at the decimal total_amount_usdt
+            # invites a ~10^8x underpay (lw_send_asset takes integer base units).
+            missing = (
+                "total_amount_sats" if order.is_lbtc
+                else "total_funding_amount_base_units"
+            )
+            unit = "L-BTC satoshi" if order.is_lbtc else "integer USDT base-unit"
             result["pay_instructions"] = (
                 f"Funding address ready ({order.address_destination}, "
                 f"asset_id={order.asset_id}), but the exact {unit} amount to send "
