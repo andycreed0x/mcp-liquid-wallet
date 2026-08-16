@@ -972,6 +972,57 @@ def test_order_status_unknown_order_raises_when_remote_fails(storage):  # Sig:3
         m.order_status(unknown)
 
 
+def test_fund_order_rejects_rail_flip_on_existing_record(storage):  # Sig:5
+    """create_order enforces the requested rail; the re-issue path must enforce
+    the STORED rail the same way. A stored L-BTC order whose re-issued funding
+    echoes USDT would otherwise silently re-denominate and emit instructions
+    for a rail the user never chose."""
+    storage.save_wapupay_order(WapuPayOrder(
+        tentative_id=TENTATIVE_ID, status="CREATED", type="fast_fiat_transfer",
+        amount_ars="24000", alias="al.cbu", created_at="t0",
+        funding_currency=FUNDING_METHOD_LBTC, funding_network=FUNDING_NETWORK_LIQUID,
+    ))
+    funding = dict(FUNDING_RESP_LBTC, funding_currency=FUNDING_METHOD_USDT)
+    m = make_manager(storage, FakeClient({"issue_funding": funding}))
+    with pytest.raises(ValueError, match="funding_method"):
+        m.fund_order(TENTATIVE_ID)
+    saved = storage.load_wapupay_order(TENTATIVE_ID)
+    assert saved.funding_currency == FUNDING_METHOD_LBTC  # stored rail kept
+    assert saved.total_funding_amount_base_units is None
+    assert saved.last_error
+
+
+def test_order_status_rejects_rail_flip_on_existing_record(storage):  # Sig:5
+    """The poll path must not silently re-denominate a stored order either:
+    merging a flipped echo and persisting it would poison the record that
+    fund_order later advertises. A rail flip raises; only a NETWORK failure
+    degrades to the warning fallback."""
+    storage.save_wapupay_order(WapuPayOrder(
+        tentative_id=TENTATIVE_ID, status="FUNDING_ISSUED", type="fast_fiat_transfer",
+        amount_ars="24000", alias="al.cbu", created_at="t0",
+        funding_currency=FUNDING_METHOD_LBTC, funding_network=FUNDING_NETWORK_LIQUID,
+        total_amount_sats=25127,
+    ))
+    latest = dict(FUNDING_RESP_LBTC, funding_currency=FUNDING_METHOD_USDT)
+    m = make_manager(storage, FakeClient({"get_tentative": latest}))
+    with pytest.raises(ValueError, match="funding_method"):
+        m.order_status(TENTATIVE_ID)
+    saved = storage.load_wapupay_order(TENTATIVE_ID)
+    assert saved.funding_currency == FUNDING_METHOD_LBTC
+    assert saved.total_amount_sats == 25127
+    assert saved.last_error
+
+
+def test_fund_order_thin_record_rejects_echoed_rail_with_wrong_asset(storage):  # Sig:5
+    """Thin record: no stored rail to compare, but the echoed rail still gets
+    the asset-consistency check — an L-BTC echo with a non-L-BTC asset raises
+    instead of instructing a send in an asset WapuPay did not quote."""
+    funding = dict(FUNDING_RESP_LBTC, asset_id=USDT_LIQUID_ASSET_ID)
+    m = make_manager(storage, FakeClient({"issue_funding": funding}))
+    with pytest.raises(ValueError, match="asset_id"):
+        m.fund_order(TENTATIVE_ID)
+
+
 def test_fund_order_rejects_malformed_id_without_network(storage):  # Sig:5
     fake = FakeClient({"issue_funding": ValueError("must not be called")})
     m = make_manager(storage, fake)

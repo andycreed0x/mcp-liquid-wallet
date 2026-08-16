@@ -941,6 +941,22 @@ class WapuPayManager:
             raise ValueError(f"{detail}; funding was issued but is NOT safe to pay.")
         raise ValueError(f"{detail} and will expire on its own; it was NOT funded.")
 
+    def _assert_known_rail(self, order: "WapuPayOrder", expected_rail: str) -> None:
+        """Run ``_assert_rail`` against the best-known rail after a re-merge.
+
+        ``expected_rail`` is the rail stored BEFORE the merge (empty for thin
+        records) — comparing against it catches a flip on the re-issue / poll
+        paths. Without a stored rail, the merged/inferred one is used so the
+        asset-consistency half of the check still runs. No rail at all (thin
+        record, unknown asset): nothing to assert — ``_funded_result`` already
+        refuses to name a send amount for an unknown rail.
+        """
+        rail = expected_rail if expected_rail in FUNDING_METHODS else (
+            order.funding_currency or ""
+        ).upper()
+        if rail in FUNDING_METHODS:
+            self._assert_rail(order, rail, funded=True)
+
     def fund_order(self, tentative_id: str) -> dict:
         """Issue (or re-issue) funding instructions for an existing order."""
         # Validate the id BEFORE it reaches URL construction / the network.
@@ -958,7 +974,13 @@ class WapuPayManager:
                 alias="",
                 created_at=datetime.now(UTC).isoformat(),
             )
+        # The stored rail is the one the user chose at create time; enforce it
+        # against the re-issued echo the same way create_order does. Thin
+        # records have no stored rail — the merged/inferred one still gets the
+        # asset-consistency half of the check.
+        expected_rail = (order.funding_currency or "").upper()
         order.apply_tentative(funding)
+        self._assert_known_rail(order, expected_rail)
         order.last_error = None
         self.storage.save_wapupay_order(order)
         return self._funded_result(order)
@@ -972,8 +994,17 @@ class WapuPayManager:
 
         order = self.storage.load_wapupay_order(tentative_id)
         warning = None
+        latest = None
+        # Only the NETWORK failure degrades to a warning (the last-known local
+        # record is still useful). A response that violates the money contract
+        # (rail flip, wrong asset, malformed amounts) must raise, not display.
         try:
             latest = self.client.get_tentative(tentative_id, api_key=key)
+        except Exception as e:
+            if order is None:
+                raise
+            warning = f"Could not refresh status: {e}"
+        if latest is not None:
             if order is None:
                 order = WapuPayOrder(
                     tentative_id=tentative_id,
@@ -983,13 +1014,11 @@ class WapuPayManager:
                     alias="",
                     created_at=datetime.now(UTC).isoformat(),
                 )
+            expected_rail = (order.funding_currency or "").upper()
             order.apply_tentative(latest)
+            self._assert_known_rail(order, expected_rail)
             order.last_checked_at = datetime.now(UTC).isoformat()
             self.storage.save_wapupay_order(order)
-        except Exception as e:
-            if order is None:
-                raise
-            warning = f"Could not refresh status: {e}"
 
         result = order.to_dict()
         result["is_final"] = order_is_final(order.status)
