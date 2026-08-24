@@ -54,6 +54,7 @@ from .ankara import (
     _mask,
     _redact,
 )
+from .assets import LBTC_ASSET_ID, USDT_LIQUID_ASSET_ID
 
 logger = logging.getLogger(__name__)
 
@@ -81,6 +82,17 @@ FUNDING_METHOD_USDT = "USDT"
 FUNDING_METHOD_LBTC = "LBTC"
 FUNDING_METHODS = (FUNDING_METHOD_USDT, FUNDING_METHOD_LBTC)
 FUNDING_NETWORK_LIQUID = "LIQUID"
+
+# A known Liquid policy asset pins the rail. Used ONLY when WapuPay omits
+# funding_currency (thin cross-device records / legacy files): asset_id is the
+# field lw_send_asset actually spends by, so it is the one unambiguous rail
+# signal in a funding response. An unknown asset stays un-inferred — the
+# denomination branches must then refuse to name a send amount.
+_RAIL_BY_ASSET_ID = {
+    LBTC_ASSET_ID: FUNDING_METHOD_LBTC,
+    USDT_LIQUID_ASSET_ID: FUNDING_METHOD_USDT,
+}
+_ASSET_ID_BY_RAIL = {rail: asset for asset, rail in _RAIL_BY_ASSET_ID.items()}
 
 # Fiat side is always Argentine pesos
 CURRENCY_PAYMENT_ARS = "ARS"
@@ -394,6 +406,13 @@ class WapuPayOrder:
     @classmethod
     def from_dict(cls, data: dict) -> "WapuPayOrder":
         data = dict(data)
+        # Back-fill a missing rail from a known asset_id BEFORE the legacy
+        # scrub below: a currency-less record with the L-BTC asset would
+        # otherwise be treated as legacy USDT and lose its real sat amount.
+        if not (data.get("funding_currency") or "").strip():
+            inferred = _RAIL_BY_ASSET_ID.get(data.get("asset_id") or "")
+            if inferred:
+                data["funding_currency"] = inferred
         # Drop stale sat amounts from legacy records: the USDT-on-Liquid rail
         # never has real sats. The L-BTC-on-Liquid rail DOES (total_amount_sats
         # is the real amount to send), so it must survive a reload — key off
@@ -428,21 +447,34 @@ class WapuPayOrder:
                 if field in _MONEY_FIELDS:
                     value = _to_decimal(value)
                 setattr(self, field, value)
+        # A response that omits funding_currency (thin cross-device records)
+        # must not default to USDT semantics: infer the rail from a known
+        # asset_id before deriving any denomination-dependent amount.
+        if not self.funding_currency:
+            inferred = _RAIL_BY_ASSET_ID.get(self.asset_id or "")
+            if inferred:
+                self.funding_currency = inferred
         # Always recalculate integer USDT base units (precision-8) for Liquid from
         # total_amount_usdt to avoid stale values; distinct from funding_amount_sat (BTC).
 
         self._derive_base_units()
         # Sats are integers end-to-end (see CLAUDE.md invariant 1). total_amount_sats
-        # is the L-BTC send amount, so a fractional wire value is a contract
-        # violation, not something to round: truncating it would underpay and
-        # WapuPay would not settle.
-        if isinstance(self.total_amount_sats, float):
-            if not self.total_amount_sats.is_integer():
+        # is the L-BTC send amount, so anything but a positive whole number is a
+        # contract violation, not something to coerce: rounding a fraction would
+        # underpay, and a zero/negative/string value has no payable meaning. The
+        # USDT rail already rejects non-positive totals (usdt_to_base_units) —
+        # this keeps the L-BTC boundary equally strict.
+        if self.total_amount_sats is not None:
+            value = self.total_amount_sats
+            if isinstance(value, float) and value.is_integer():
+                value = int(value)
+            if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
                 raise ValueError(
-                    f"WapuPay returned a fractional total_amount_sats: "
-                    f"{self.total_amount_sats!r} (satoshis must be whole)"
+                    f"WapuPay returned an invalid total_amount_sats: "
+                    f"{self.total_amount_sats!r} (satoshis must be a positive "
+                    f"whole number)"
                 )
-            self.total_amount_sats = int(self.total_amount_sats)
+            self.total_amount_sats = value
         # funding_amount_sat is record-only; keep it an int for a clean round-trip.
         if isinstance(self.funding_amount_sat, float):
             self.funding_amount_sat = int(self.funding_amount_sat)
@@ -856,7 +888,11 @@ class WapuPayManager:
             )
             return result
 
-        order.apply_tentative(funding)
+        try:
+            order.apply_tentative(funding)
+        except ValueError as e:
+            self._annotate_rejected_response(tentative_id, e)
+            raise
         # Re-check after the SECOND merge: the funding response overwrites
         # funding_currency, so a rail that flips here would re-derive the other
         # rail's amounts while asset_id still points at the first one.
@@ -866,34 +902,85 @@ class WapuPayManager:
         return self._funded_result(order)
 
     def _assert_rail(self, order: "WapuPayOrder", funding_method: str, *, funded: bool) -> None:
-        """Refuse to continue if WapuPay's echoed rail contradicts the request.
+        """Refuse to continue if WapuPay's echo contradicts the expected rail.
 
         The rail selects the denomination of the amount the user is told to send
-        (sats vs USDT base units) while ``asset_id`` selects the asset. If the two
-        disagree the caller can overpay by ~10^8x, so this raises rather than
-        re-deriving (CLAUDE.md invariant 5 — no silent fallback).
+        (sats vs USDT base units) while ``asset_id`` selects the asset
+        ``lw_send_asset`` actually spends. Both are checked: a flipped
+        ``funding_currency`` re-denominates the amount (~10^8x overpay), and a
+        flipped ``asset_id`` sends the right figure in the wrong asset. Either
+        way this raises rather than re-deriving (CLAUDE.md invariant 5 — no
+        silent fallback).
         """
+        detail = None
+        rail_flipped = False
         echoed = (order.funding_currency or "").upper()
-        if not echoed or echoed == funding_method:
+        if echoed and echoed != funding_method:
+            rail_flipped = True
+            detail = (
+                f"WapuPay echoed funding_currency={order.funding_currency!r} for a "
+                f"funding_method={funding_method!r} order; refusing to continue. "
+                f"The tentative exists upstream as {order.tentative_id}"
+            )
+        else:
+            # Both rails settle in a Liquid policy asset whose id is a global
+            # constant, so any other asset_id is an upstream contract violation.
+            expected_asset = _ASSET_ID_BY_RAIL.get(funding_method)
+            if expected_asset and order.asset_id and order.asset_id != expected_asset:
+                detail = (
+                    f"WapuPay returned asset_id={order.asset_id!r} for a "
+                    f"funding_method={funding_method!r} order (expected "
+                    f"{expected_asset}); refusing to continue. "
+                    f"The tentative exists upstream as {order.tentative_id}"
+                )
+        if detail is None:
             return
-        detail = (
-            f"WapuPay echoed funding_currency={order.funding_currency!r} for a "
-            f"funding_method={funding_method!r} order; refusing to continue. "
-            f"The tentative exists upstream as {order.tentative_id}"
-        )
         if funded:
             # Already persisted: record why it stalled so the local record isn't
             # a silent orphan, then refuse to hand back pay_instructions.
             order.last_error = detail
-            # Restore the REQUESTED rail before saving. Clearing the derived
-            # amount here would not stick — from_dict re-derives it on every
-            # load — so the record must be left self-consistent (requested rail
-            # + matching asset_id) instead of carrying a contradictory mix.
-            order.funding_currency = funding_method
-            order._derive_base_units()
+            if rail_flipped:
+                # Restore the REQUESTED rail before saving. Clearing the derived
+                # amount here would not stick — from_dict re-derives it on every
+                # load — so the record must keep the requested denomination
+                # instead of the flipped one. (asset_id keeps the echoed value;
+                # last_error marks the record as not safe to pay.)
+                order.funding_currency = funding_method
+                order._derive_base_units()
             self.storage.save_wapupay_order(order)
             raise ValueError(f"{detail}; funding was issued but is NOT safe to pay.")
         raise ValueError(f"{detail} and will expire on its own; it was NOT funded.")
+
+    def _assert_known_rail(self, order: "WapuPayOrder", expected_rail: str) -> None:
+        """Run ``_assert_rail`` against the best-known rail after a re-merge.
+
+        ``expected_rail`` is the rail stored BEFORE the merge (empty for thin
+        records) — comparing against it catches a flip on the re-issue / poll
+        paths. Without a stored rail, the merged/inferred one is used so the
+        asset-consistency half of the check still runs. No rail at all (thin
+        record, unknown asset): nothing to assert — ``_funded_result`` already
+        refuses to name a send amount for an unknown rail.
+        """
+        rail = expected_rail if expected_rail in FUNDING_METHODS else (
+            order.funding_currency or ""
+        ).upper()
+        if rail in FUNDING_METHODS:
+            self._assert_rail(order, rail, funded=True)
+
+    def _annotate_rejected_response(self, tentative_id: str, error: Exception) -> None:
+        """Mark the persisted record with why a WapuPay response was rejected.
+
+        Mirrors ``_assert_rail(funded=True)``: a raise after funding was issued
+        must not leave the local record a silent orphan. The half-merged
+        in-memory order is NOT saved — a rejected response must not leave its
+        contract-violating values on disk — the clean stored record is
+        annotated instead. No stored record (thin path): nothing to annotate.
+        """
+        stored = self.storage.load_wapupay_order(tentative_id)
+        if stored is None:
+            return
+        stored.last_error = f"Funding response rejected: {error}"
+        self.storage.save_wapupay_order(stored)
 
     def fund_order(self, tentative_id: str) -> dict:
         """Issue (or re-issue) funding instructions for an existing order."""
@@ -912,7 +999,17 @@ class WapuPayManager:
                 alias="",
                 created_at=datetime.now(UTC).isoformat(),
             )
-        order.apply_tentative(funding)
+        # The stored rail is the one the user chose at create time; enforce it
+        # against the re-issued echo the same way create_order does. Thin
+        # records have no stored rail — the merged/inferred one still gets the
+        # asset-consistency half of the check.
+        expected_rail = (order.funding_currency or "").upper()
+        try:
+            order.apply_tentative(funding)
+        except ValueError as e:
+            self._annotate_rejected_response(tentative_id, e)
+            raise
+        self._assert_known_rail(order, expected_rail)
         order.last_error = None
         self.storage.save_wapupay_order(order)
         return self._funded_result(order)
@@ -926,8 +1023,17 @@ class WapuPayManager:
 
         order = self.storage.load_wapupay_order(tentative_id)
         warning = None
+        latest = None
+        # Only the NETWORK failure degrades to a warning (the last-known local
+        # record is still useful). A response that violates the money contract
+        # (rail flip, wrong asset, malformed amounts) must raise, not display.
         try:
             latest = self.client.get_tentative(tentative_id, api_key=key)
+        except Exception as e:
+            if order is None:
+                raise
+            warning = f"Could not refresh status: {e}"
+        if latest is not None:
             if order is None:
                 order = WapuPayOrder(
                     tentative_id=tentative_id,
@@ -937,13 +1043,11 @@ class WapuPayManager:
                     alias="",
                     created_at=datetime.now(UTC).isoformat(),
                 )
+            expected_rail = (order.funding_currency or "").upper()
             order.apply_tentative(latest)
+            self._assert_known_rail(order, expected_rail)
             order.last_checked_at = datetime.now(UTC).isoformat()
             self.storage.save_wapupay_order(order)
-        except Exception as e:
-            if order is None:
-                raise
-            warning = f"Could not refresh status: {e}"
 
         result = order.to_dict()
         result["is_final"] = order_is_final(order.status)
@@ -1018,7 +1122,10 @@ class WapuPayManager:
                 f"WapuPay's fee — send the full amount or WapuPay won't "
                 f"settle.{payout_note}{expires_note}"
             )
-        elif not order.is_lbtc and order.total_funding_amount_base_units is not None:
+        elif (
+            (order.funding_currency or "").upper() == FUNDING_METHOD_USDT
+            and order.total_funding_amount_base_units is not None
+        ):
             fee_display = order.fee_amount_usdt if order.fee_amount_usdt is not None else 0
             result["pay_instructions"] = (
                 f"Send exactly {order.total_amount_usdt} USDT "
@@ -1028,20 +1135,37 @@ class WapuPayManager:
                 f"WapuPay's {fee_display} USDT fee — send the full "
                 f"amount or WapuPay won't settle.{payout_note}{expires_note}"
             )
-        else:
+        elif (order.funding_currency or "").upper() in FUNDING_METHODS:
             # Thin record (e.g. order created on another device): the funding
             # response carries no total, so the exact amount isn't known locally.
             # Don't fabricate a "None" amount (No-lies rule) — point the user at
-            # order-status to fetch the real total first. The missing field and
-            # the unit differ per rail, so name the right one: telling an L-BTC
-            # payer to fetch a USDT figure invites a ~10^8x overpayment.
-            missing = "total_amount_sats" if order.is_lbtc else "total_amount_usdt"
-            unit = "L-BTC satoshi" if order.is_lbtc else "USDT"
+            # order-status to fetch the real total first. Name the field that is
+            # DIRECTLY payable via lw_send_asset (integer sats / base units) per
+            # rail: pointing an L-BTC payer at a USDT figure invites a ~10^8x
+            # overpay, and pointing a USDT payer at the decimal total_amount_usdt
+            # invites a ~10^8x underpay (lw_send_asset takes integer base units).
+            missing = (
+                "total_amount_sats" if order.is_lbtc
+                else "total_funding_amount_base_units"
+            )
+            unit = "L-BTC satoshi" if order.is_lbtc else "integer USDT base-unit"
             result["pay_instructions"] = (
                 f"Funding address ready ({order.address_destination}, "
                 f"asset_id={order.asset_id}), but the exact {unit} amount to send "
                 f"is not available locally yet. Call wapupay_order_status with "
                 f"tentative_id={order.tentative_id} to fetch {missing}, "
                 f"then pay that exact amount with lw_send_asset."
+            )
+        else:
+            # Rail unknown: WapuPay omitted funding_currency and the asset_id is
+            # not a known policy asset, so even the DENOMINATION of the amount
+            # is unknown. Naming any figure here risks the ~10^8x sat/base-unit
+            # mixup — refuse to instruct a send until a refresh supplies the rail.
+            result["pay_instructions"] = (
+                f"Funding address ready ({order.address_destination}), but the "
+                f"funding rail (USDT vs L-BTC) and the exact amount to send are "
+                f"not known locally. Call wapupay_order_status with "
+                f"tentative_id={order.tentative_id} to fetch funding_currency "
+                f"and the amount before paying anything."
             )
         return result

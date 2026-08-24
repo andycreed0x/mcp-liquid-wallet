@@ -31,7 +31,7 @@ from aqua.ankara import (
     _mask,
     _redact,
 )
-from aqua.assets import LBTC_ASSET_ID
+from aqua.assets import LBTC_ASSET_ID, USDT_LIQUID_ASSET_ID
 from aqua.jan3_accounts import Jan3AccountsManager, Jan3Session
 from aqua.storage import Storage
 from aqua.wapupay import (
@@ -849,6 +849,66 @@ def test_fund_order_thin_record_with_total_but_no_fee_uses_placeholder(storage):
     assert "0 USDT fee" in out["pay_instructions"]
 
 
+def test_fund_order_thin_record_infers_lbtc_rail_from_asset_id(storage):  # Sig:5
+    """Cross-device fund_order for an L-BTC order whose funding response omits
+    funding_currency: the L-BTC asset_id pins the rail. Without the inference
+    the thin record fell into the USDT branch and paired the USDT-scale total
+    (~10^8x too much) with the L-BTC asset id."""
+    funding = {k: v for k, v in FUNDING_RESP_LBTC.items() if k != "funding_currency"}
+    fake = FakeClient({"issue_funding": funding})
+    m = make_manager(storage, fake)
+    out = m.fund_order(TENTATIVE_ID)
+    assert out["funding_currency"] == FUNDING_METHOD_LBTC
+    assert out["total_funding_amount_base_units"] is None
+    instr = out["pay_instructions"]
+    assert "25127 sats" in instr
+    assert "base units" not in instr
+    # The inferred rail is persisted, so a reload keeps the real sat amount
+    # instead of scrubbing it as legacy-USDT residue.
+    saved = storage.load_wapupay_order(TENTATIVE_ID)
+    assert saved.funding_currency == FUNDING_METHOD_LBTC
+    assert saved.total_amount_sats == 25127
+    assert saved.total_funding_amount_base_units is None
+
+
+def test_fund_order_unknown_rail_refuses_to_name_a_send_amount(storage):  # Sig:5
+    """funding_currency absent AND asset_id not a known policy asset: even the
+    DENOMINATION of any figure is unknown, so pay_instructions must never say
+    "Send exactly" — it points at order-status to fetch the rail first."""
+    funding = {
+        "tentative_id": TENTATIVE_ID, "status": "FUNDING_ISSUED",
+        "address_destination": "lq1qqfunding0address",
+        "asset_id": "ab" * 32,  # not a known Liquid policy asset
+        "total_amount_usdt": 15.78, "total_amount_sats": 25127,
+    }
+    fake = FakeClient({"issue_funding": funding})
+    m = make_manager(storage, fake)
+    out = m.fund_order(TENTATIVE_ID)
+    instr = out["pay_instructions"]
+    assert "Send exactly" not in instr
+    assert "wapupay_order_status" in instr
+    assert "None" not in instr
+
+
+def test_from_dict_infers_lbtc_rail_before_the_legacy_scrub():  # Sig:5
+    """A record persisted without funding_currency but with the L-BTC asset must
+    reload as L-BTC: inference runs before the legacy-USDT scrub, so the real
+    sat amount survives and the stale USDT-scale base units are cleared."""
+    poisoned = {
+        "tentative_id": TENTATIVE_ID, "status": "FUNDING_ISSUED",
+        "type": "", "amount_ars": "", "alias": "", "created_at": "t0",
+        "funding_network": FUNDING_NETWORK_LIQUID,
+        "asset_id": LBTC_ASSET_ID,
+        "total_amount_usdt": "15.78",
+        "total_funding_amount_base_units": 1578000000,
+        "total_amount_sats": 25127,
+    }
+    o = WapuPayOrder.from_dict(poisoned)
+    assert o.funding_currency == FUNDING_METHOD_LBTC
+    assert o.total_amount_sats == 25127
+    assert o.total_funding_amount_base_units is None
+
+
 def test_from_dict_migration_drops_stale_sat_on_none_network(storage):  # Sig:5
     """A legacy thin record (funding_network missing) with a stale USDT-derived
     funding_amount_sat must NOT load as a real BTC sat. It's dropped, and the
@@ -910,6 +970,93 @@ def test_order_status_unknown_order_raises_when_remote_fails(storage):  # Sig:3
     unknown = "00000000-0000-0000-0000-000000000000"  # valid UUID, not stored
     with pytest.raises(ValueError):
         m.order_status(unknown)
+
+
+def test_fund_order_rejects_rail_flip_on_existing_record(storage):  # Sig:5
+    """create_order enforces the requested rail; the re-issue path must enforce
+    the STORED rail the same way. A stored L-BTC order whose re-issued funding
+    echoes USDT would otherwise silently re-denominate and emit instructions
+    for a rail the user never chose."""
+    storage.save_wapupay_order(WapuPayOrder(
+        tentative_id=TENTATIVE_ID, status="CREATED", type="fast_fiat_transfer",
+        amount_ars="24000", alias="al.cbu", created_at="t0",
+        funding_currency=FUNDING_METHOD_LBTC, funding_network=FUNDING_NETWORK_LIQUID,
+    ))
+    funding = dict(FUNDING_RESP_LBTC, funding_currency=FUNDING_METHOD_USDT)
+    m = make_manager(storage, FakeClient({"issue_funding": funding}))
+    with pytest.raises(ValueError, match="funding_method"):
+        m.fund_order(TENTATIVE_ID)
+    saved = storage.load_wapupay_order(TENTATIVE_ID)
+    assert saved.funding_currency == FUNDING_METHOD_LBTC  # stored rail kept
+    assert saved.total_funding_amount_base_units is None
+    assert saved.last_error
+
+
+def test_order_status_rejects_rail_flip_on_existing_record(storage):  # Sig:5
+    """The poll path must not silently re-denominate a stored order either:
+    merging a flipped echo and persisting it would poison the record that
+    fund_order later advertises. A rail flip raises; only a NETWORK failure
+    degrades to the warning fallback."""
+    storage.save_wapupay_order(WapuPayOrder(
+        tentative_id=TENTATIVE_ID, status="FUNDING_ISSUED", type="fast_fiat_transfer",
+        amount_ars="24000", alias="al.cbu", created_at="t0",
+        funding_currency=FUNDING_METHOD_LBTC, funding_network=FUNDING_NETWORK_LIQUID,
+        total_amount_sats=25127,
+    ))
+    latest = dict(FUNDING_RESP_LBTC, funding_currency=FUNDING_METHOD_USDT)
+    m = make_manager(storage, FakeClient({"get_tentative": latest}))
+    with pytest.raises(ValueError, match="funding_method"):
+        m.order_status(TENTATIVE_ID)
+    saved = storage.load_wapupay_order(TENTATIVE_ID)
+    assert saved.funding_currency == FUNDING_METHOD_LBTC
+    assert saved.total_amount_sats == 25127
+    assert saved.last_error
+
+
+def test_create_order_annotates_record_when_funding_response_is_rejected(storage):  # Sig:5
+    """A funding response that violates the money contract (fractional sats)
+    raises AFTER the order was persisted. The stored record must be annotated
+    with last_error — not left a silent CREATED orphan while upstream funding
+    exists — and must not carry the rejected fractional value."""
+    funding = dict(FUNDING_RESP_LBTC, total_amount_sats=25127.5)
+    fake = FakeClient({"create_tentative": dict(CREATE_RESP_LBTC), "issue_funding": funding})
+    m = make_manager(storage, fake)
+    with pytest.raises(ValueError, match="total_amount_sats"):
+        m.create_order(
+            amount_ars="24000", alias="al.cbu", transfer_type="fast_fiat_transfer",
+            funding_method=FUNDING_METHOD_LBTC,
+        )
+    saved = storage.load_wapupay_order(TENTATIVE_ID)
+    assert saved.last_error and "total_amount_sats" in saved.last_error
+    assert saved.total_amount_sats == 25127  # the create response's clean value
+
+
+def test_fund_order_annotates_stored_record_when_response_is_rejected(storage):  # Sig:5
+    """Recovery via fund_order hits the same contract-violation raise; the
+    stored record gets the same annotation instead of staying un-fundable
+    with no recorded reason."""
+    storage.save_wapupay_order(WapuPayOrder(
+        tentative_id=TENTATIVE_ID, status="CREATED", type="fast_fiat_transfer",
+        amount_ars="24000", alias="al.cbu", created_at="t0",
+        funding_currency=FUNDING_METHOD_LBTC, funding_network=FUNDING_NETWORK_LIQUID,
+    ))
+    funding = dict(FUNDING_RESP_LBTC, total_amount_sats=25127.5)
+    m = make_manager(storage, FakeClient({"issue_funding": funding}))
+    with pytest.raises(ValueError, match="total_amount_sats"):
+        m.fund_order(TENTATIVE_ID)
+    saved = storage.load_wapupay_order(TENTATIVE_ID)
+    assert saved.last_error and "total_amount_sats" in saved.last_error
+    assert saved.total_amount_sats is None  # rejected value never persisted
+
+
+def test_fund_order_thin_record_rejects_echoed_rail_with_wrong_asset(storage):  # Sig:5
+    """Thin record: no stored rail to compare, but the echoed rail still gets
+    the asset-consistency check — an L-BTC echo with a non-L-BTC asset raises
+    instead of instructing a send in an asset WapuPay did not quote."""
+    funding = dict(FUNDING_RESP_LBTC, asset_id=USDT_LIQUID_ASSET_ID)
+    m = make_manager(storage, FakeClient({"issue_funding": funding}))
+    with pytest.raises(ValueError, match="asset_id"):
+        m.fund_order(TENTATIVE_ID)
 
 
 def test_fund_order_rejects_malformed_id_without_network(storage):  # Sig:5
@@ -1254,6 +1401,7 @@ def test_funded_result_keeps_payout_clause_when_known(storage):  # Sig:5
     order = WapuPayOrder(
         tentative_id=TENTATIVE_ID, status="FUNDING_ISSUED", type="fiat_transfer",
         amount_ars="10000", alias="al.cbu", created_at="t0",
+        funding_currency=FUNDING_METHOD_USDT,
         address_destination="lq1x", asset_id="ce091", total_amount_usdt=Decimal("7.13"),
     )
     order._derive_base_units()
@@ -1469,6 +1617,24 @@ def test_lbtc_without_total_sats_states_no_amount_and_never_says_usdt():  # Sig:
     assert "None" not in instr
 
 
+def test_usdt_thin_fallback_names_the_base_units_field():  # Sig:5
+    """The USDT fallback must point at total_funding_amount_base_units — the
+    integer amount lw_send_asset actually takes — not the decimal
+    total_amount_usdt: an agent literally paying the decimal with
+    lw_send_asset underpays by ~10^8x (or errors on a non-integer)."""
+    order = WapuPayOrder(
+        tentative_id=TENTATIVE_ID, status="FUNDING_ISSUED", type="fiat_transfer",
+        amount_ars="10000", alias="al.cbu", created_at="t0",
+        funding_currency=FUNDING_METHOD_USDT,
+        address_destination="lq1qqfunding0address", asset_id=USDT_LIQUID_ASSET_ID,
+    )
+    instr = WapuPayManager._funded_result(order)["pay_instructions"]
+    assert "total_funding_amount_base_units" in instr
+    assert "total_amount_usdt" not in instr
+    assert "wapupay_order_status" in instr
+    assert "None" not in instr
+
+
 def test_create_order_persists_requested_rail_when_wapupay_omits_it(storage):  # Sig:5
     """The caller's requested rail is authoritative. If WapuPay's responses omit
     funding_currency, the order must still be L-BTC — otherwise every
@@ -1522,6 +1688,38 @@ def test_create_order_rejects_rail_flip_on_the_funding_response(storage):  # Sig
     assert saved.last_error
 
 
+def test_create_order_rejects_wrong_asset_for_lbtc_rail(storage):  # Sig:5
+    """funding_currency selects the denomination, but asset_id selects the asset
+    lw_send_asset actually spends. A funding response pairing the L-BTC rail
+    with a non-L-BTC asset would make the caller send the sat figure in USDT
+    base units — the order never settles and the funds leave in an asset
+    WapuPay did not quote. Contract violation on a money path: raise."""
+    funding = dict(FUNDING_RESP_LBTC, asset_id=USDT_LIQUID_ASSET_ID)
+    fake = FakeClient({"create_tentative": dict(CREATE_RESP_LBTC), "issue_funding": funding})
+    m = make_manager(storage, fake)
+    with pytest.raises(ValueError, match="asset_id"):
+        m.create_order(
+            amount_ars="24000", alias="al.cbu", transfer_type="fast_fiat_transfer",
+            funding_method=FUNDING_METHOD_LBTC,
+        )
+    # Persisted record is annotated (not a silent orphan) and keeps the rail.
+    saved = storage.load_wapupay_order(TENTATIVE_ID)
+    assert saved.last_error and "asset_id" in saved.last_error
+    assert saved.funding_currency == FUNDING_METHOD_LBTC
+
+
+def test_create_order_rejects_wrong_asset_for_usdt_rail(storage):  # Sig:5
+    """Symmetric guard: a USDT-rail funding response carrying the L-BTC asset id
+    must raise instead of instructing an L-BTC send for a USDT-quoted order."""
+    funding = dict(FUNDING_RESP, asset_id=LBTC_ASSET_ID)
+    fake = FakeClient({"create_tentative": dict(CREATE_RESP), "issue_funding": funding})
+    m = make_manager(storage, fake)
+    with pytest.raises(ValueError, match="asset_id"):
+        m.create_order(amount_ars="10000", alias="al.cbu", transfer_type="fiat_transfer")
+    saved = storage.load_wapupay_order(TENTATIVE_ID)
+    assert saved.last_error and "asset_id" in saved.last_error
+
+
 def test_total_amount_sats_must_be_a_whole_number():  # Sig:5
     """Sats are integers end-to-end (invariant 1). A fractional wire value is a
     contract violation — truncating it downward would underpay."""
@@ -1530,6 +1728,16 @@ def test_total_amount_sats_must_be_a_whole_number():  # Sig:5
     assert isinstance(order.total_amount_sats, int)
     with pytest.raises(ValueError, match="total_amount_sats"):
         _lbtc_order(total_amount_sats=10498.5)
+
+
+def test_total_amount_sats_must_be_a_positive_integer():  # Sig:5
+    """The strict boundary rejects the whole class of non-payable values — zero,
+    negative, and string-typed sats — with the same contract-violation
+    ValueError as fractional ones. "Send exactly -25127 sats" must never reach
+    pay_instructions, and a str would round-trip into storage uncoerced."""
+    for bad in (0, -25127, -25127.0, "25127", True):
+        with pytest.raises(ValueError, match="total_amount_sats"):
+            _lbtc_order(total_amount_sats=bad)
 
 
 def test_from_dict_drops_stale_total_amount_sats_on_usdt_record():  # Sig:5
